@@ -20,7 +20,7 @@ cdef vector[zobrist_hash_t] get_zobrist_lookup(short size):
     return table
 
 
-cdef zobrist_hash_t update_hash_by_location(zobrist_hash_t current_hash, vector[zobrist_hash_t] table, location_t location, stone_t color):  # noqa: E501
+cdef zobrist_hash_t update_hash_by_location(zobrist_hash_t current_hash, vector[zobrist_hash_t]& table, location_t location, stone_t color):  # noqa: E501
     """Update zobrist hash for a single location and color. This applies to both adding and removing
        a stone.
     """
@@ -30,7 +30,7 @@ cdef zobrist_hash_t update_hash_by_location(zobrist_hash_t current_hash, vector[
     return current_hash ^ table[2 * location + <short>(color == stone_t.BLACK)]
 
 
-cdef zobrist_hash_t update_hash_by_group(zobrist_hash_t current_hash, vector[zobrist_hash_t] table, group_ptr_t group):  # noqa: E501
+cdef zobrist_hash_t update_hash_by_group(zobrist_hash_t current_hash, vector[zobrist_hash_t]& table, group_ptr_t group):  # noqa: E501
     """Update zobrist hash for an entire group. This applies both to adding and removing groups.
     """
 

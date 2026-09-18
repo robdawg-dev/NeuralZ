@@ -102,6 +102,27 @@ cdef class Preprocess:
 
         return offset + 8
 
+    cdef int get_last_moves(self, GameState state, onehot_t[:, :] tensor, lookahead_t[:, :] groups_after, int offset):  # noqa: E501
+        """A feature encoding the locations of each of the last 5 moves played, one plane per
+           move (plane 0 = most recent move, plane 4 = 5th-most-recent).
+
+           Note:
+           - unlike turns_since, this is not tied to whether the stone is still on the board -
+             a later capture does not erase the mark
+           - a pass, or a move further back than history extends, leaves its plane all-zero
+        """
+
+        cdef int n_moves = state.moves_history.size()
+        cdef int i
+        cdef location_t location
+
+        for i in range(min(n_moves, 5)):
+            location = state.moves_history[n_moves - 1 - i]
+            if location != action_t.PASS:
+                tensor[offset + i, location] = 1
+
+        return offset + 5
+
     cdef int get_liberties(self, GameState state, onehot_t[:, :] tensor, lookahead_t[:, :] groups_after, int offset):  # noqa: E501
         """A feature encoding the number of liberties of the group connected to the stone at each
            location
@@ -369,6 +390,10 @@ cdef class Preprocess:
                 processor = self.get_turns_since
                 self.output_dim += 8
 
+            elif feat == "last_moves":
+                processor = self.get_last_moves
+                self.output_dim += 5
+
             elif feat == "liberties":
                 processor = self.get_liberties
                 self.output_dim += 8
@@ -446,7 +471,8 @@ cdef class Preprocess:
     ############################################################################
 
     cpdef np.ndarray[onehot_t, ndim=4] state_to_tensor(self, GameState state):
-        """Convert a GameState to a Theano-compatible tensor of one-hot features
+        """Convert a GameState to a tensor of one-hot features, shape
+        (1, size, size, n_features) - channels_last, as expected by the network.
         """
 
         cdef int i
@@ -470,8 +496,9 @@ cdef class Preprocess:
             offset = proc(self, state, np_tensor, groups_after, offset)
 
         # Reshape result from (features, board_size) to (1, features, size, size), i.e. with a
-        # 2D board for input to a convolutional network and a singleton 'batch' dimension.
-        return np_tensor.reshape((1, self.output_dim, self.size, self.size))
+        # 2D board for input to a convolutional network and a singleton 'batch' dimension, then
+        # move the channel axis to the end for channels_last (this network's data_format).
+        return np_tensor.reshape((1, self.output_dim, self.size, self.size)).transpose((0, 2, 3, 1))
 
     ############################################################################
     #   public def function (Python)                                           #
@@ -510,37 +537,28 @@ cdef np.ndarray[lookahead_t, ndim=2] get_groups_after(GameState state):
 
     cdef location_t loc
     cdef np.ndarray[lookahead_t, ndim=2] result = np.zeros((state.board_size, 3), dtype=np.uint16)
-    cdef np.ndarray[lookahead_t, ndim=1] result_at
 
     # Call get_groups_after_at() for each legal move
     for loc in state.legal_moves:
-        result_at = get_groups_after_at(state, loc)
-        result[loc, 0] = result_at[0]
-        result[loc, 1] = result_at[1]
-        result[loc, 2] = result_at[2]
+        get_groups_after_at(state, loc, result)
 
     return result
 
 
-cdef np.ndarray[lookahead_t, ndim=1] get_groups_after_at(GameState state, location_t loc):
-    """Compute 'groups_after' results at a single location, which must be a legal move.
-
-       Returns a size (3,) numpy arry with group size in index 0, liberty count in index 1, and
-       number of opponent stones captured in index 2 (see get_groups_after())
+cdef void get_groups_after_at(GameState state, location_t loc, np.ndarray[lookahead_t, ndim=2] result):
+    """Compute 'groups_after' results at a single location, which must be a legal move, writing
+       directly into result[loc, :] (see the .pxd docstring for why this doesn't allocate and
+       return a fresh array - it runs once per legal move).
     """
-
-    cdef np.ndarray[lookahead_t, ndim=1] result = np.zeros((3,), dtype=np.uint16)
 
     cdef short capture_before = \
         state.capture_black if state.current_player == stone_t.WHITE else state.capture_white
     cdef short capture_after
 
     with state.try_stone(loc, False):
-        result[0] = d(state.board[loc]).count_stones
-        result[1] = d(state.board[loc]).count_liberty
+        result[loc, 0] = d(state.board[loc]).count_stones
+        result[loc, 1] = d(state.board[loc]).count_liberty
 
         capture_after = \
             state.capture_black if state.current_player == stone_t.WHITE else state.capture_white
-        result[2] = capture_after - capture_before
-
-    return result
+        result[loc, 2] = capture_after - capture_before

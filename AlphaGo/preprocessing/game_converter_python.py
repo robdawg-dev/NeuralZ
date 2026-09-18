@@ -1,23 +1,93 @@
 #!/usr/bin/env python
-import os
-import sgf
-import warnings
-import h5py as h5
+"""Pure-Python reference game converter, kept frozen and independent of the (now
+Cython-backed by default) AlphaGo.go / AlphaGo.preprocessing.preprocessing / AlphaGo.util
+- see AlphaGo/preprocessing/game_converter.py for the default, Cython-accelerated
+equivalent. This file's own SGF-parsing glue is a local copy (not imported from
+AlphaGo.util, which now targets the Cython engine's API) so this stays a true frozen
+reference for future correctness comparisons.
+"""
 import numpy as np
-import AlphaGo.go as go
-from AlphaGo.preprocessing.preprocessing import Preprocess
-from AlphaGo.util import sgf_iter_states
+from AlphaGo.preprocessing.preprocessing_python import Preprocess
+import AlphaGo.go_python as go
+import os
+import warnings
+import sgf
+import h5py as h5
+
+LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
 
 class SizeMismatchError(Exception):
     pass
 
 
+def _parse_sgf_move(node_value):
+    """Given a well-formed move string, return either PASS_MOVE or the (x, y) position
+    """
+    if node_value == '' or node_value == 'tt':
+        return go.PASS_MOVE
+    else:
+        # GameState expects (x, y) where x is column and y is row
+        col = LETTERS.index(node_value[0].upper())
+        row = LETTERS.index(node_value[1].upper())
+        return (col, row)
+
+
+def _sgf_init_gamestate(sgf_root):
+    """Helper function to set up a GameState object from the root node of an SGF file
+    """
+    props = sgf_root.properties
+    s_size = props.get('SZ', ['19'])[0]
+    s_player = props.get('PL', ['B'])[0]
+    # init board with specified size
+    gs = go.GameState(int(s_size))
+    # handle 'add black' property
+    if 'AB' in props:
+        for stone in props['AB']:
+            gs.do_move(_parse_sgf_move(stone), go.BLACK)
+    # handle 'add white' property
+    if 'AW' in props:
+        for stone in props['AW']:
+            gs.do_move(_parse_sgf_move(stone), go.WHITE)
+    # setup done; set player according to 'PL' property
+    gs.current_player = go.BLACK if s_player == 'B' else go.WHITE
+    return gs
+
+
+def sgf_iter_states(sgf_string, include_end=True):
+    """Iterates over (GameState, move, player) tuples in the first game of the given SGF file.
+
+    Ignores variations - only the main line is returned. The state object is modified
+    in-place, so don't try to, for example, keep track of it through time.
+
+    If include_end is False, the final tuple yielded is the penultimate state, but the
+    state will still be left in the final position at the end of iteration because 'gs'
+    is modified in-place.
+    """
+    collection = sgf.parse(sgf_string)
+    game = collection[0]
+    gs = _sgf_init_gamestate(game.root)
+    if game.rest is not None:
+        for node in game.rest:
+            props = node.properties
+            if 'W' in props:
+                move = _parse_sgf_move(props['W'][0])
+                player = go.WHITE
+            elif 'B' in props:
+                move = _parse_sgf_move(props['B'][0])
+                player = go.BLACK
+            yield (gs, move, player)
+            # update state to n+1
+            gs.do_move(move, player)
+    if include_end:
+        yield (gs, go.PASS_MOVE, None)
+
+
 class GameConverter:
 
     def __init__(self, features):
         self.feature_processor = Preprocess(features)
-        self.n_features = self.feature_processor.get_output_dimension()
+        self.n_features = self.feature_processor.output_dim
 
     def convert_game(self, file_name, bd_size):
         """Read the given SGF file into an iterable of (input,output) pairs
@@ -33,9 +103,9 @@ class GameConverter:
             state_action_iterator = sgf_iter_states(file_object.read(), include_end=False)
 
         for (state, move, player) in state_action_iterator:
-            if state.get_size() != bd_size:
+            if state.size != bd_size:
                 raise SizeMismatchError()
-            if move != go.PASS:
+            if move != go.PASS_MOVE:
                 nn_input = self.feature_processor.state_to_tensor(state)
                 yield (nn_input, move)
 
@@ -94,7 +164,7 @@ class GameConverter:
 
             # Store comma-separated list of feature planes in the scalar field 'features'. The
             # string can be retrieved using h5py's scalar indexing: h5f['features'][()]
-            h5f['features'] = np.bytes_(','.join(self.feature_processor.get_feature_list()))
+            h5f['features'] = np.bytes_(','.join(self.feature_processor.feature_list))
 
             if verbose:
                 print("created HDF5 dataset in {}".format(tmp_file))
@@ -111,7 +181,7 @@ class GameConverter:
                         if next_idx >= len(states):
                             states.resize((next_idx + 1, bd_size, bd_size, self.n_features))
                             actions.resize((next_idx + 1, 2))
-                        states[next_idx] = state[0]
+                        states[next_idx] = state
                         actions[next_idx] = move
                         n_pairs += 1
                         next_idx += 1

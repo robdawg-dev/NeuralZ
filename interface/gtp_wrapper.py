@@ -1,10 +1,30 @@
+import datetime
 import sys
+import multiprocessing
+import os
 import gtp
 from AlphaGo import go
-import multiprocessing
-from AlphaGo.go import GameState
 from AlphaGo.util import save_gamestate_to_sgf
 from builtins import input
+
+# A dedicated log file (rather than stderr) so the command trail survives even if stderr
+# has been redirected to /dev/null - written next to this file regardless of cwd, so it
+# lands in a predictable place no matter where the process is launched from.
+_CMD_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "gtp_commands.log")
+
+
+def _log_gtp_command(cmd):
+    try:
+        with open(_CMD_LOG_PATH, "a") as f:
+            f.write("{} pid={} recv: {!r}\n".format(
+                datetime.datetime.now().isoformat(), os.getpid(), cmd))
+    except OSError:
+        pass  # never let logging itself take down the bot
+
+# The gtp package's own BLACK/WHITE constants (1/-1) don't match this engine's
+# BLACK/WHITE values, so GTP-supplied colors must be translated before they reach
+# GameState.do_move()/set_current_player().
+_GTP_TO_GO_COLOR = {gtp.BLACK: go.BLACK, gtp.WHITE: go.WHITE}
 
 
 def run_gnugo(sgf_file_name, command):
@@ -13,7 +33,7 @@ def run_gnugo(sgf_file_name, command):
         from subprocess import Popen, PIPE
         p = Popen(['gnugo', '--chinese-rules', '--mode', 'gtp', '-l', sgf_file_name],
                   stdout=PIPE, stdin=PIPE, stderr=PIPE)
-        out_bytes = p.communicate(input=command)[0]
+        out_bytes = p.communicate(input=command.encode('utf-8'))[0]
         return out_bytes.decode('utf-8')[2:]
     else:
         return ''
@@ -87,41 +107,36 @@ class GTPGameConnector(object):
     """
 
     def __init__(self, player):
-        self._state = GameState(enforce_superko=True)
+        self._state = go.GameState(enforce_superko=True)
         self._player = player
-        self._komi = 0
+        # Not currently read anywhere (final scoring goes through an external gnugo
+        # process via SGF export, not through GameState) - kept only so 'set_komi'
+        # has somewhere to write to, matching the previous (already unused) behavior.
+        self._komi = 7.5
 
     def clear(self):
-        self._state = GameState()
+        self._state = go.GameState(self._state.get_size(), enforce_superko=True)
 
     def make_move(self, color, vertex):
         # vertex in GTP language is 1-indexed, whereas GameState's are zero-indexed
-        if color == gtp.BLACK:
-            color = go.BLACK
-        else:
-            color = go.WHITE
         try:
             if vertex == gtp.PASS:
                 self._state.do_move(go.PASS)
             else:
                 (x, y) = vertex
-                self._state.do_move((x - 1, y - 1), color)
+                self._state.do_move((x - 1, y - 1), _GTP_TO_GO_COLOR[color])
             return True
         except go.IllegalMove:
             return False
 
     def set_size(self, n):
-        self._state = GameState(size=n, enforce_superko=True)
+        self._state = go.GameState(n, enforce_superko=True)
 
     def set_komi(self, k):
         self._komi = k
 
     def get_move(self, color):
-        if color == gtp.BLACK:
-            color = go.BLACK
-        else:
-            color = go.WHITE
-        self._state.set_current_player(color)
+        self._state.set_current_player(_GTP_TO_GO_COLOR[color])
         move = self._player.get_move(self._state)
         if move == go.PASS:
             return gtp.PASS
@@ -157,6 +172,7 @@ def run_gtp(player_obj, inpt_fn=None, name="Gtp Player", version="0.0"):
         # or multiple commands separated by '\n'
         cmd_list = inpt.split("\n")
         for cmd in cmd_list:
+            #_log_gtp_command(cmd)
             engine_reply = gtp_engine.send(cmd)
             sys.stdout.write(engine_reply)
             sys.stdout.flush()

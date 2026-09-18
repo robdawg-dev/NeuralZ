@@ -1,5 +1,6 @@
 """Interface for AlphaGo self-play"""
-from AlphaGo.go import PASS, WHITE, GameState
+from AlphaGo import go
+from AlphaGo.go import GameState
 
 
 class play_match(object):
@@ -18,9 +19,10 @@ class play_match(object):
         # TODO: Fix is_eye?
         self.state.do_move(move)  # Return max prob sensible legal move
         # self.state.write_to_disk()
-        if len(self.state.get_history()) > 1:
-            if self.state.get_history()[-1] is PASS and self.state.get_history()[-2] is PASS \
-                    and self.state.get_current_player() == WHITE:
+        history = self.state.get_history()
+        if len(history) > 1:
+            if history[-1] is None and history[-2] is None \
+                    and self.state.get_current_player() == go.WHITE:
                 end_of_game = True
             else:
                 end_of_game = False

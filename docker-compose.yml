@@ -1,0 +1,25 @@
+services:
+  gpu:
+    build: .
+    volumes:
+      - .:/workspace
+      # Training-data output lives on E: (C: doesn't have room for a full corpus
+      # conversion - the estimated output is ~228GB, C: only has ~69GB free).
+      - E:/AlphaGoTraining:/data
+    working_dir: /workspace
+    environment:
+      # Make failures obvious if GPU passthrough isn't actually wired up, rather than
+      # silently falling back to CPU.
+      - TF_CPP_MIN_LOG_LEVEL=1
+      # Works around an XLA/cuDNN9 autotuner failure on this GPU - see
+      # AlphaGo/training/xla_workarounds.py for the full explanation, which is also where
+      # this is actually enforced now (belt-and-suspenders: training code sets this itself
+      # at module load, so it no longer depends on this env var surviving here).
+      - XLA_FLAGS=--xla_gpu_force_conv_nhwc=true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

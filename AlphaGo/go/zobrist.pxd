@@ -14,11 +14,11 @@ cdef vector[zobrist_hash_t] get_zobrist_lookup(short size)
 """
 
 
-cdef zobrist_hash_t update_hash_by_location(zobrist_hash_t current_hash, vector[zobrist_hash_t] lut, location_t location, stone_t color)  # noqa: E501
+cdef zobrist_hash_t update_hash_by_location(zobrist_hash_t current_hash, vector[zobrist_hash_t]& lut, location_t location, stone_t color)  # noqa: E501
 """Update zobrist hash for a single location and color.
 """
 
 
-cdef zobrist_hash_t update_hash_by_group(zobrist_hash_t current_hash, vector[zobrist_hash_t] lut, group_ptr_t group)  # noqa: E501
+cdef zobrist_hash_t update_hash_by_group(zobrist_hash_t current_hash, vector[zobrist_hash_t]& lut, group_ptr_t group)  # noqa: E501
 """Update zobrist hash for an entire group.
 """

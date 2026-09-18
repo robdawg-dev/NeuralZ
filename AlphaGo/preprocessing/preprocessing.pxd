@@ -80,6 +80,16 @@ cdef class Preprocess:
        - _EMPTY locations are all-zero features
     """
 
+    cdef int get_last_moves(self, GameState state, onehot_t[:, :] tensor, lookahead_t[:, :] groups_after, int offset)  # noqa: E501
+    """A feature encoding the locations of each of the last 5 moves played, one plane per
+       move (plane 0 = most recent move, plane 4 = 5th-most-recent).
+
+       Note:
+       - unlike turns_since, this is not tied to whether the stone is still on the board -
+         a later capture does not erase the mark
+       - a pass, or a move further back than history extends, leaves its plane all-zero
+    """
+
     cdef int get_liberties(self, GameState state, onehot_t[:, :] tensor, lookahead_t[:, :] groups_after, int offset)  # noqa: E501
     """A feature encoding the number of liberties of the group connected to the stone at each
        location
@@ -217,9 +227,12 @@ cdef np.ndarray[lookahead_t, ndim=2] get_groups_after(GameState state)
    - groups_after[loc, 2] = number of stones captured by playing at loc
 """
 
-cdef np.ndarray[lookahead_t, ndim=1] get_groups_after_at(GameState state, location_t loc)
-"""Compute 'groups_after' results at a single location, which must be a legal move.
+cdef void get_groups_after_at(GameState state, location_t loc, np.ndarray[lookahead_t, ndim=2] result)
+"""Compute 'groups_after' results at a single location, which must be a legal move, writing
+   directly into result[loc, :] rather than allocating and returning a new (3,) array - this
+   runs once per legal move (commonly ~200-300 times per real move played), so avoiding a
+   fresh numpy allocation per call matters.
 
-   Returns a size (3,) numpy arry with group size in index 0, liberty count in index 1, and
-   number of opponent stones captured in index 2 (see get_groups_after())
+   Writes group size to result[loc, 0], liberty count to result[loc, 1], and number of
+   opponent stones captured to result[loc, 2] (see get_groups_after())
 """

@@ -241,7 +241,7 @@ cdef class GameState:
         """
 
         cdef int i, first
-        cdef bool played
+        cdef bool played = False
 
         # Part 1: quickly check that the current player has ever played at this location; if not, no
         # fancier check is needed.
@@ -859,7 +859,7 @@ cdef class GameState:
             print("--- %x: %d / %d / %d ---" % (<unsigned long long> group.get(), d(group).color,
                                                 d(group).count_stones, d(group).count_liberty))
             for loc, val in d(group).locations:
-                print "\t", calculate_tuple_location(loc, self.size), val
+                print("\t", calculate_tuple_location(loc, self.size), val)
 
     cpdef bool sanity_check_groups(self):
         """Debugging helper: loops over every location and group on the board and checks that they are
@@ -961,10 +961,15 @@ cdef class GameState:
         return self.current_player
 
     def get_history(self):
-        """Return history as a list of tuples
+        """Return history as a list of (x, y) tuples, with None for a pass.
+
+        (Without the None special-case, a pass - stored internally as action_t.PASS = -1 -
+        would come back as the meaningless calculate_tuple_location(-1, size), rather than
+        matching do_move()'s own None-for-pass convention.)
         """
 
-        return [calculate_tuple_location(loc, self.size) for loc in self.moves_history]
+        return [None if loc == action_t.PASS else calculate_tuple_location(loc, self.size)
+                for loc in self.moves_history]
 
     def get_captures_black(self):
         """Return amount of black stones captures
@@ -1020,7 +1025,7 @@ cdef class GameState:
         """Get numpy array with all liberty counts for all stones.
         """
 
-        liberty = np.zeros((self.size, self.size), dtype=np.int)
+        liberty = np.zeros((self.size, self.size), dtype=int)
 
         for x in range(self.size):
             for y in range(self.size):
@@ -1033,7 +1038,7 @@ cdef class GameState:
         """Get numpy array with board locations set to stone colors
         """
 
-        board = np.zeros((self.size, self.size), dtype=np.int)
+        board = np.zeros((self.size, self.size), dtype=int)
 
         for x in range(self.size):
             for y in range(self.size):
@@ -1052,10 +1057,15 @@ cdef class GameState:
         return self.size
 
     def get_handicaps(self):
-        """Return list with handicap stones placed by BLACK at beginning of the game.
+        """Return list of (x, y) tuples for the handicap stones placed by BLACK at the
+           beginning of the game.
         """
 
-        return self.moves_history[:self.num_handicap]
+        n = min(self.num_handicap, self.moves_history.size())
+        result = []
+        for i in range(n):
+            result.append(calculate_tuple_location(self.moves_history[i], self.size))
+        return result
 
     def get_print_board_layout(self):
         """Print current board state

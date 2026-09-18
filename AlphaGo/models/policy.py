@@ -1,7 +1,5 @@
 from keras.models import Sequential, Model
-from keras.layers import Input, BatchNormalization, Conv2D
-from keras.layers.merge import add
-from keras.layers.core import Activation, Flatten
+from keras.layers import Input, BatchNormalization, Conv2D, add, Activation, Flatten
 from AlphaGo.util import flatten_idx
 from AlphaGo.models.nn_util import Bias, NeuralNetBase, neuralnet
 import numpy as np
@@ -23,7 +21,9 @@ class CNNPolicy(NeuralNetBase):
         # get network activations at legal move locations
         distribution = nn_output[move_indices]
         distribution = distribution / distribution.sum()
-        return zip(moves, distribution)
+        # list(), not a bare zip: callers (e.g. AlphaGo/mcts.py) call len() on this and
+        # may iterate it more than once, neither of which a Python 3 zip iterator supports.
+        return list(zip(moves, distribution))
 
     def batch_eval_state(self, states, moves_lists=None):
         """Given a list of states, evaluates them all at once to make best use of GPU
@@ -96,7 +96,7 @@ class CNNPolicy(NeuralNetBase):
 
         # create first layer
         network.add(Conv2D(
-            input_shape=(params["input_dim"], params["board"], params["board"]),
+            input_shape=(params["board"], params["board"], params["input_dim"]),
             filters=params.get("filters_per_layer_1", params["filters_per_layer"]),
             kernel_size=(params["filter_width_1"], params["filter_width_1"]),
             kernel_initializer='uniform',
@@ -109,7 +109,7 @@ class CNNPolicy(NeuralNetBase):
             use_bias=True,
             bias_regularizer=None,
             bias_constraint=None,
-            data_format="channels_first",
+            data_format="channels_last",
             kernel_regularizer=None))
 
         # create all other layers
@@ -135,7 +135,7 @@ class CNNPolicy(NeuralNetBase):
                 use_bias=True,
                 bias_regularizer=None,
                 bias_constraint=None,
-                data_format="channels_first",
+                data_format="channels_last",
                 kernel_regularizer=None))
 
         # the last layer maps each <filters_per_layer> feature to a number
@@ -151,15 +151,18 @@ class CNNPolicy(NeuralNetBase):
             use_bias=True,
             bias_regularizer=None,
             bias_constraint=None,
-            data_format="channels_first",
+            data_format="channels_last",
             kernel_regularizer=None))
 
         # reshape output to be board x board
         network.add(Flatten())
         # add a bias to each board location
         network.add(Bias())
-        # softmax makes it into a probability distribution
-        network.add(Activation('softmax'))
+        # softmax makes it into a probability distribution. Forced to float32 regardless
+        # of a global mixed-precision policy - softmax over many classes plus the loss
+        # computation right after it are the standard spot mixed precision recommends
+        # keeping at full precision, to avoid overflow/underflow right at the output.
+        network.add(Activation('softmax', dtype='float32'))
 
         return network
 
@@ -222,7 +225,7 @@ class ResnetPolicy(CNNPolicy):
 
         # create the network using Keras' functional API,
         # since this isn't 'Sequential'
-        model_input = Input(shape=(params["input_dim"], params["board"], params["board"]))
+        model_input = Input(shape=(params["board"], params["board"], params["input_dim"]))
 
         # create first layer
         convolution_path = Conv2D(
@@ -239,7 +242,7 @@ class ResnetPolicy(CNNPolicy):
             use_bias=True,
             bias_regularizer=None,
             bias_constraint=None,
-            data_format="channels_first",
+            data_format="channels_last",
             kernel_regularizer=None)(model_input)
 
         def add_resnet_unit(path, K, **params):
@@ -279,7 +282,7 @@ class ResnetPolicy(CNNPolicy):
                     use_bias=True,
                     bias_regularizer=None,
                     bias_constraint=None,
-                    data_format="channels_first",
+                    data_format="channels_last",
                     kernel_regularizer=None)(path)
 
             # Merge 'input layer' with the path
@@ -312,14 +315,17 @@ class ResnetPolicy(CNNPolicy):
             use_bias=True,
             bias_regularizer=None,
             bias_constraint=None,
-            data_format="channels_first",
+            data_format="channels_last",
             kernel_regularizer=None)(convolution_path)
 
         # flatten output
         network_output = Flatten()(convolution_path)
         # add a bias to each board location
         network_output = Bias()(network_output)
-        # softmax makes it into a probability distribution
-        network_output = Activation('softmax')(network_output)
+        # softmax makes it into a probability distribution. Forced to float32 regardless
+        # of a global mixed-precision policy - softmax over many classes plus the loss
+        # computation right after it are the standard spot mixed precision recommends
+        # keeping at full precision, to avoid overflow/underflow right at the output.
+        network_output = Activation('softmax', dtype='float32')(network_output)
 
         return Model(inputs=[model_input], outputs=[network_output])

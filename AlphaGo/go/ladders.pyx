@@ -7,7 +7,7 @@ from cython.operator cimport dereference as d
 
 
 cdef bool is_ladder_escape_move(GameState state, group_ptr_t prey, location_t move, int depth=50):  # noqa:E501
-    """(Inefficiently) check whether the given move escapes ladder capture of the given group.
+    """Check whether the given move escapes ladder capture of the given group.
        Returns True when escape is plausible, or recursion depth limit is reached (assuming that the
        opponent does not recognize ladders with greater depth as a 'capture' either)
 
@@ -17,8 +17,12 @@ cdef bool is_ladder_escape_move(GameState state, group_ptr_t prey, location_t mo
        - given move is legal
        - depth >= 0
 
-       Note: while optimizations can be made by avoiding copied states, this version is at least
-       easily comprehensible.
+       Mutates and restores 'state' in place via try_stone at every ply rather than copying
+       it, since each recursive call is nested inside the caller's 'with state.try_stone()'
+       block and is fully undone once that block exits. Callers at the top of a ladder search
+       (get_ladder_capture/get_ladder_escape in preprocessing.pyx) should still pass a copy of
+       the real game state in, since this function's caller-visible contract is "safe to
+       temporarily alter" - not "safe to call on the live game state".
     """
 
     cdef location_t prey_loc = group_get_stone(prey)
@@ -43,8 +47,12 @@ cdef bool is_ladder_escape_move(GameState state, group_ptr_t prey, location_t mo
         # Requires recursive search.
         else:
             # Opponent may attempt to capture at either of the prey's two liberties.
+            # No state.copy() here: the recursive call happens entirely inside the
+            # enclosing 'with state.try_stone(move)' block above, which fully undoes
+            # this ply once it exits, so it's safe (and much cheaper) to recurse on the
+            # same state rather than deep-copying the whole board at every ply.
             for plausible_capture in get_plausible_capture_moves(state, prey):
-                if is_ladder_capture_move(state.copy(), prey, plausible_capture, depth - 1):
+                if is_ladder_capture_move(state, prey, plausible_capture, depth - 1):
                     return False
 
             # If reached here, none of prey's liberties are ladder captures, in which case it
@@ -52,7 +60,7 @@ cdef bool is_ladder_escape_move(GameState state, group_ptr_t prey, location_t mo
             return True
 
 cdef bool is_ladder_capture_move(GameState state, group_ptr_t prey, location_t move, int depth=50):  # noqa:E501
-    """(Inefficiently) check whether the given move captures the prey, or forces capture of the
+    """Check whether the given move captures the prey, or forces capture of the
        prey by a ladder within 'depth' moves.
 
        Preconditions:
@@ -61,8 +69,8 @@ cdef bool is_ladder_capture_move(GameState state, group_ptr_t prey, location_t m
        - given move is legal
        - depth >= 0
 
-       Note: while optimizations can be made by avoiding copied states, this version is at least
-       easily comprehensible.
+       See the matching note in is_ladder_escape_move re: state is mutated/restored via
+       try_stone rather than copied at each ply.
     """
 
     cdef location_t prey_loc = group_get_stone(prey)
@@ -83,8 +91,9 @@ cdef bool is_ladder_capture_move(GameState state, group_ptr_t prey, location_t m
         # Requires recursive search.
         elif d(prey).count_liberty == 1:
             # Try each potential escape move
+            # (see the matching comment in is_ladder_escape_move re: not copying here)
             for plausible_escape in get_plausible_escape_moves(state, prey):
-                if is_ladder_escape_move(state.copy(), prey, plausible_escape, depth - 1):
+                if is_ladder_escape_move(state, prey, plausible_escape, depth - 1):
                     return False
 
         # If reached here, either prey was captured or no escape move was found

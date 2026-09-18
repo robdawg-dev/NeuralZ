@@ -4,7 +4,10 @@ import keras.backend as K
 
 # This file is used anywhere that neural net features are used; setting the keras dimension ordering
 # here makes it universal to the project.
-K.set_image_dim_ordering('th')
+#
+# channels_last (rather than the original Theano-era channels_first) because TensorFlow's CPU
+# Conv2D kernels only support NHWC - channels_first is GPU/cuDNN-only under TensorFlow.
+K.set_image_data_format('channels_last')
 
 ##
 # individual feature functions (state --> tensor) begin here
@@ -254,11 +257,6 @@ FEATURES = {
     "legal": {
         "size": 1,
         "function": get_legal
-    },
-    "color": {
-        "size": 1,
-        "function": lambda state: np.ones((1, state.size, state.size)) *
-        (state.current_player == go.BLACK)
     }
 }
 
@@ -290,14 +288,13 @@ class Preprocess(object):
                 raise ValueError("uknown feature: %s" % feat)
 
     def state_to_tensor(self, state):
-        """Convert a GameState to a Theano-compatible tensor
+        """Convert a GameState to a tensor of shape (1, size, size, n_features), i.e.
+        channels_last, as expected by the network
         """
         feat_tensors = [proc(state) for proc in self.processors]
 
-        # concatenate along feature dimension then add in a singleton 'batch' dimension
+        # concatenate along feature dimension (each feature function still produces
+        # (channels, size, size)), add in a singleton 'batch' dimension, then move the
+        # channel axis to the end for channels_last
         f, s = self.output_dim, state.size
-
-        tensor = np.concatenate(feat_tensors).reshape((1, f, s, s))
-        tensor = tensor.astype(np.int8)
-
-        return tensor
+        return np.concatenate(feat_tensors).reshape((1, f, s, s)).transpose((0, 2, 3, 1))
