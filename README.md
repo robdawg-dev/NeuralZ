@@ -1,26 +1,11 @@
-# RocAlphaGo
+# NeuralZ
 
-(Previously known just as "AlphaGo," renamed to clarify that we are not affiliated with DeepMind)
+This project is a modernization of the RocAlphaGo project that seems dead. It was originally intended to re-implement AlphaGo. Mostly only the policy network was fully implemented. The value and rollout networks had some work done but computational challenges prevented them from being fully utilized.
 
-This project is a student-led replication/reference implementation of DeepMind's 2016 Nature publication, "Mastering the game of Go with deep neural networks and tree search," details of which can be found [on their website](http://deepmind.com/alpha-go.html). This implementation uses Python and Keras - a decision to prioritize code clarity, at least in the early stages.
+In 2016 a policy network was trained using a conventional cnn of 12 layers and 96 filters using GoGoD data. This used less filters than the original AlphaGo due to hardware constraints. It was run on KGS as a bot and seemed to achieve about 2k strength.
 
-[![Build Status](https://travis-ci.org/Rochester-NRT/RocAlphaGo.svg?branch=develop)](https://travis-ci.org/Rochester-NRT/RocAlphaGo)
-[![Gitter](https://badges.gitter.im/Rochester-NRT/RocAlphaGo.svg)](https://gitter.im/Rochester-NRT/RocAlphaGo?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
+In 2017 a policy network was trained using a conventional cnn of 12 layers and 96 filters using KGS data. This mostly recreated the AlphaGo policy network. It was run on KGS as a bot in 2022 and seemed to achieve about 2d strength.
 
-# Documentation
+In 2026 this project was created. The original project was updated to use uv and docker, upgraded all of the libraries and began reproduction of the 2017 run against modern hardware. The 2017 run was trained on 2 months with a gtx 1060. A resnet tower model (b10c128) was added to this project and trained on katago selfplay data. After 22 hours of training on an rtx 4070 super it was run on KGS as a bot and appears to achieve around 4d strength.
 
-See the [project wiki](https://github.com/Rochester-NRT/RocAlphaGo/wiki).
-
-# Current project status
-
-_This is not yet a full implementation of AlphaGo_. Development is being carried out on the `develop` branch. The current emphasis is on speed optimizations, which are necessary to complete training of the value-network and to create feasible tree-search. See the `cython-optimization` branch for more.
-
-Selected data (i.e. trained models) are released in our [data repository](http://github.com/Rochester-NRT/RocAlphaGo.data).
-
-This project has primarily focused on the neural network training aspect of DeepMind's AlphaGo. We also have a simple single-threaded implementation of their tree search algorithm, though it is not fast enough to be competitive yet.
-
-See the wiki page on the [training pipeline](https://github.com/Rochester-NRT/RocAlphaGo/wiki/04.-Neural-Networks-and-Training) for information on how to run the training commands.
-
-# How to contribute
-
-See the ['Contributing'](CONTRIBUTING.md) document and join the [Gitter chat](https://gitter.im/Rochester-NRT/RocAlphaGo).
+Currently training a b15c192 model which is converging much faster despite the longer training time per step.
