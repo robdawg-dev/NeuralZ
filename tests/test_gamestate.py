@@ -81,6 +81,54 @@ class TestKo(unittest.TestCase):
             gs.do_move(move)
         self.assertFalse(gs.is_legal((1, 0)))
 
+    # The same superko position, but reached in a HANDICAP game.
+    #
+    # Handicap stones are all Black and are pushed onto moves_history, so after N of them
+    # WHITE moves first - which flips the parity of every subsequent move relative to an
+    # even game. is_positional_superko()'s Part 1 pre-filter ("has the current player ever
+    # played here? if not, superko is impossible") slices moves_history by that parity, and
+    # used to derive it assuming Black always moves first. In a handicap game that made it
+    # scan the OPPONENT's moves, miss the current player's own, and return "not superko"
+    # without ever running the Part 2 hash check - letting a genuine superko violation
+    # through. Only the GTP player sets enforce_superko=True, so this never affected
+    # training data, but it did affect handicap games played on KGS.
+    #
+    # Colours are inverted relative to test_positional_superko above (White moves first
+    # here), so the repeated position is the same shape with the colours swapped and the
+    # player facing the superko is Black.
+    HANDICAP_SUPERKO_MOVES = [
+        (0, 3), (0, 4), (1, 3), (1, 4), (2, 3), (2, 4), (2, 2), (3, 4), (2, 1), (3, 3),
+        (3, 1), (3, 2), (3, 0), (4, 2), (1, 1), (4, 1), (8, 0), (4, 0), (8, 1), (0, 2),
+        (8, 2), (0, 1), (8, 3), (1, 0), (8, 4), (2, 0), (0, 0)]
+    # far from the fight in columns 0-4 and 8, so they never interact with it
+    HANDICAP_STONES = [(5, 7), (6, 7)]
+
+    def _handicap_superko_state(self, enforce_superko):
+        gs = GameState(size=9, enforce_superko=enforce_superko)
+        gs.place_handicaps(self.HANDICAP_STONES)
+        # after black handicap stones, White is to move - plain alternation from here
+        self.assertEqual(gs.get_current_player(), go.WHITE)
+        for move in self.HANDICAP_SUPERKO_MOVES:
+            gs.do_move(move)
+        return gs
+
+    def test_positional_superko_with_handicap(self):
+        # sanity: the handicap stones really are on the board and accounted for
+        gs = self._handicap_superko_state(enforce_superko=False)
+        self.assertEqual(len(gs.get_handicaps()), len(self.HANDICAP_STONES))
+        # Black is the player facing the repeat here (colours are swapped vs. the
+        # even-game version above)
+        self.assertEqual(gs.get_current_player(), go.BLACK)
+        # without enforcement the repeat is allowed
+        self.assertTrue(gs.is_legal((1, 0)))
+
+        # with enforcement it must be rejected, exactly as in the even game
+        gs = self._handicap_superko_state(enforce_superko=True)
+        self.assertFalse(
+            gs.is_legal((1, 0)),
+            "superko went undetected in a handicap game - is_positional_superko's "
+            "move-parity pre-filter is scanning the wrong player's moves")
+
 
 class TestEye(unittest.TestCase):
 

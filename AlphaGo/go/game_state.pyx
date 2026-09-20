@@ -250,8 +250,25 @@ cdef class GameState:
         if self.current_player == stone_t.BLACK and self.num_handicap > 0:
             played = location in self.moves_history[:self.num_handicap]
 
-        # Calculate which was the first non-handicap move made by the current player
-        first = self.num_handicap + (1 if self.current_player == stone_t.WHITE else 0)
+        # Calculate which was the first non-handicap move made by the current player.
+        #
+        # Derived from parity rather than from who-moves-first: the opponent played the
+        # most recent move, so the current player's own moves sit at indices
+        # size()-2, size()-4, ... - that is, every other index sharing size()'s parity.
+        # The first such index at or after the handicap block starts the slice.
+        #
+        # The previous form (num_handicap + 1 if WHITE else 0) assumed Black always moves
+        # first, which only holds in an even game. After N black handicap stones WHITE
+        # moves first, so White's moves land on indices N, N+2, ... and Black's on
+        # N+1, N+3, ... - exactly inverted from what that expression produced, making this
+        # pre-filter scan the OPPONENT's moves in every handicap game. Since a miss here
+        # returns "not superko" without running the Part 2 hash check below, that let
+        # genuine superko violations through (permissive direction) whenever
+        # enforce_superko was on - i.e. for the GTP player, which is the only caller that
+        # enables it.
+        first = self.num_handicap
+        if (first % 2) != (self.moves_history.size() % 2):
+            first += 1
 
         # Check if 'location' matches any other move made by the current player.
         played = played or location in self.moves_history[first::2]
