@@ -525,6 +525,7 @@ def run_training_v2(cmd_line_args=None):
     parser.add_argument("--plateau-patience", type=int, default=5, help="--lr-schedule plateau only: epochs with no val_loss improvement before cutting the learning rate. Default: 5. Counts in *epochs* as shaped by --epoch-length, not real dataset passes - a small --epoch-length reacts faster in wall-clock terms but each epoch's val_loss reading is noisier (fewer steps backing it), so pick patience relative to whatever --epoch-length this run actually uses.")  # noqa: E501
     parser.add_argument("--plateau-cooldown", type=int, default=2, help="--lr-schedule plateau only: epochs to wait after a cut before monitoring for a new plateau again, so each cut gets a fair chance to show its effect before another one can fire. Default: 2 (Keras's own default is 0, which allows immediate back-to-back cuts).")  # noqa: E501
     parser.add_argument("--plateau-min-lr", type=float, default=0.0, help="--lr-schedule plateau only: floor - the learning rate is never cut below this. Default: 0.0 (matches Keras's own default, i.e. no floor) - set this explicitly (e.g. some fraction of --learning-rate) to keep training from grinding to a near-zero LR the way cosine's default alpha=0 does.")  # noqa: E501
+    parser.add_argument("--plateau-min-delta", type=float, default=0.005, help="--lr-schedule plateau only: minimum val_loss improvement to count as 'still improving' and reset --plateau-patience's wait counter. Default: 0.005 - NOT Keras's own default of 1e-4, which measured 30-50x smaller than this project's real epoch-to-epoch val_loss noise (stdev ~0.0048-0.0162 across the b15c192 mb1024 lr1p6 run's two LR phases). At 1e-4, noise alone registers a 'new best' often enough that the patience counter rarely reaches --plateau-patience even during a genuine multi-epoch plateau - that run needed a manual LR cut at epoch 36 and ground for 39 more epochs (avg 0.0014/epoch) before the next one. 0.005 sits just above the quieter (lower-LR) phase's noise floor and comfortably below real early-training gains, so it filters noise-driven bests without masking genuine progress.")  # noqa: E501
     parser.add_argument("--buffer-size", help="Number of positions held in the shuffle buffer at once. Default: 400000 (~7GB at 19x19x48 planes)", type=int, default=400000)  # noqa: E501
     parser.add_argument("--verbose", "-v", help="Turn on verbose mode", default=False, action="store_true")  # noqa: E501
     # slightly fancier args
@@ -906,7 +907,7 @@ def run_training_v2(cmd_line_args=None):
             initial_lr = resumed_target_lr
             resumed_best, resumed_wait, resumed_cooldown = _replay_plateau_state(
                 meta_writer.metadata["epochs"], args.plateau_factor, args.plateau_patience,
-                args.plateau_cooldown, args.plateau_min_lr)
+                args.plateau_cooldown, args.plateau_min_lr, min_delta=args.plateau_min_delta)
         else:
             resumed_target_lr = None
             initial_lr = args.warmup_start_lr
@@ -917,7 +918,8 @@ def run_training_v2(cmd_line_args=None):
             warmup_cb = WarmupCallback(args.warmup_steps, args.warmup_start_lr, args.learning_rate)
         plateau_cb = ReduceLROnPlateau(
             monitor="val_loss", factor=args.plateau_factor, patience=args.plateau_patience,
-            cooldown=args.plateau_cooldown, min_lr=args.plateau_min_lr, verbose=1)
+            cooldown=args.plateau_cooldown, min_lr=args.plateau_min_lr,
+            min_delta=args.plateau_min_delta, verbose=1)
         lr_override_cb = LROverrideCallback(
             args.out_directory, warmup_cb=warmup_cb, verbose=args.verbose)
         optimizer_state_cb = OptimizerStateCallback(args.out_directory)

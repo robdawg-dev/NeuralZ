@@ -291,7 +291,15 @@ def shuffle_buffer_batch_generator(games, buffer_size, batch_size, board_size, n
                 batch_idx += 1
                 if batch_idx == batch_size:
                     batch_idx = 0
-                    yield (Xbatch, Ybatch)
+                    # .copy(): Xbatch/Ybatch are reused in place across every yield, not
+                    # reallocated per batch. Keras's GeneratorDataAdapter peeks 2 batches
+                    # via itertools.islice() before wrapping this generator (to infer
+                    # tensor shapes) and stores both in a list - without a copy here, both
+                    # stored references alias the same array, so by the time the second
+                    # peek call mutates it, the first "batch" silently becomes a duplicate
+                    # of the second and real batch 1 is lost. Confirmed by reading
+                    # keras/src/trainers/data_adapters/generator_data_adapter.py directly.
+                    yield (Xbatch.copy(), Ybatch.copy())
     finally:
         shard_cache.close()
 
