@@ -1,5 +1,6 @@
 import os
 import itertools
+import numpy as np
 import sgf
 from AlphaGo import go
 
@@ -150,7 +151,7 @@ def plot_network_output(scores, board, history, out_directory, output_file,
     plt.ylim([0, board.size + 1])
 
     # Wooden background color
-    ax.set_axis_bgcolor('#fec97b')
+    ax.set_facecolor('#fec97b')  # set_axis_bgcolor was renamed to set_facecolor in matplotlib 2.0, then removed entirely in 3.0
     plt.gca().invert_yaxis()
 
     # Setup ticks
@@ -205,9 +206,9 @@ def plot_network_output(scores, board, history, out_directory, output_file,
                 stone_x_coords.append(i + 1)
                 stone_y_coords.append(j + 1)
                 if board[i][j] == go.BLACK:
-                    stone_colors.append(plt.to_rgb('black'))
+                    stone_colors.append(matplotlib.colors.to_rgb('black'))
                 else:
-                    stone_colors.append(plt.to_rgb('white'))
+                    stone_colors.append(matplotlib.colors.to_rgb('white'))
     plt.scatter(stone_x_coords, stone_y_coords, marker='o', edgecolors='k',
                 s=700, c=stone_colors, zorder=4)
 

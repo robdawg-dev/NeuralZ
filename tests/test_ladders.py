@@ -1,5 +1,5 @@
 import unittest
-import parseboard
+from tests import parseboard
 from AlphaGo.go import BLACK, WHITE
 from AlphaGo.preprocessing.preprocessing import Preprocess
 

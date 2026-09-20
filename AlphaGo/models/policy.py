@@ -78,12 +78,25 @@ class CNNPolicy(NeuralNetBase):
         - filter_width_K:        (where K is between 1 and <layers>) width of filter on
                                  layer K (default 3 except 1st layer which defaults to 5).
                                  Must be odd.
+        - kernel_initializer:    Conv2D kernel initializer. Default 'uniform' (original
+                                 behavior, unchanged) - a plain, unscaled initializer with
+                                 no variance scaling for network depth, unlike the He/
+                                 Kaiming initialization standard practice for ReLU
+                                 networks. Investigated as a candidate fix for a dead-ReLU
+                                 collapse seen training this architecture (no BatchNorm to
+                                 otherwise recenter pre-activations) on kgs-ugo-highdan
+                                 data - an unscaled init can start some units already
+                                 close to the edge of dying before any training even
+                                 happens, on top of whatever risk a large early gradient
+                                 update adds (confirmed via benchmarks/_dead_relu_check.py).
+                                 Try 'he_normal' or 'he_uniform'.
         """
         defaults = {
             "board": 19,
             "filters_per_layer": 128,
             "layers": 12,
-            "filter_width_1": 5
+            "filter_width_1": 5,
+            "kernel_initializer": "uniform"
         }
         # copy defaults, but override with anything in kwargs
         params = defaults
@@ -99,7 +112,7 @@ class CNNPolicy(NeuralNetBase):
             input_shape=(params["board"], params["board"], params["input_dim"]),
             filters=params.get("filters_per_layer_1", params["filters_per_layer"]),
             kernel_size=(params["filter_width_1"], params["filter_width_1"]),
-            kernel_initializer='uniform',
+            kernel_initializer=params["kernel_initializer"],
             activation='relu',
             padding='same',
             kernel_constraint=None,
@@ -125,7 +138,7 @@ class CNNPolicy(NeuralNetBase):
             network.add(Conv2D(
                 filters=filter_nb,
                 kernel_size=(filter_width, filter_width),
-                kernel_initializer='uniform',
+                kernel_initializer=params["kernel_initializer"],
                 activation='relu',
                 padding='same',
                 kernel_constraint=None,

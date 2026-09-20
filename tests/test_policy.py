@@ -37,9 +37,9 @@ class TestCNNPolicy(unittest.TestCase):
         policy = CNNPolicy(["board", "liberties", "sensibleness", "capture_size"])
 
         model_file = 'TESTPOLICY.json'
-        weights_file = 'TESTWEIGHTS.h5'
+        weights_file = 'TESTWEIGHTS.weights.h5'
         model_file2 = 'TESTPOLICY2.json'
-        weights_file2 = 'TESTWEIGHTS2.h5'
+        weights_file2 = 'TESTWEIGHTS2.weights.h5'
 
         # test saving model/weights separately
         policy.save_model(model_file)
@@ -83,9 +83,9 @@ class TestResnetPolicy(unittest.TestCase):
         policy = ResnetPolicy(["board", "liberties", "sensibleness", "capture_size"])
 
         model_file = 'TESTPOLICY.json'
-        weights_file = 'TESTWEIGHTS.h5'
+        weights_file = 'TESTWEIGHTS.weights.h5'
         model_file2 = 'TESTPOLICY2.json'
-        weights_file2 = 'TESTWEIGHTS2.h5'
+        weights_file2 = 'TESTWEIGHTS2.weights.h5'
 
         # test saving model/weights separately
         policy.save_model(model_file)

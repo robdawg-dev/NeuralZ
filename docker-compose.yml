@@ -3,9 +3,14 @@ services:
     build: .
     volumes:
       - .:/workspace
-      # Training-data output lives on E: (C: doesn't have room for a full corpus
-      # conversion - the estimated output is ~228GB, C: only has ~69GB free).
-      - E:/AlphaGoTraining:/data
+      # No hardcoded default on purpose - a local path only ever makes sense on the
+      # machine it was written for, and this repo may end up somewhere else. Set
+      # TRAINING_DATA_DIR in a local .env (gitignored - see .env.example) instead;
+      # compose refuses to run with a clear error if it's unset. To read from a
+      # different location for one command without touching .env, override the mount
+      # directly, e.g.:
+      #   docker compose run --rm -v /some/other/path:/data:ro gpu ...
+      - ${TRAINING_DATA_DIR:?Set TRAINING_DATA_DIR in .env - see .env.example}:/data
     working_dir: /workspace
     environment:
       # Make failures obvious if GPU passthrough isn't actually wired up, rather than

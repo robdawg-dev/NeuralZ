@@ -5,11 +5,20 @@ requires-python = ">=3.10"
 dependencies = [
     "cython>=3.3.0",
     "h5py>=3.11.0,<3.15.0",
-    "pygtp==0.3",
-    "pyyaml>=6.0.3",
-    "scipy>=1.15.3",
     "sgf==0.5",
     "tensorflow==2.21.0",
+]
+
+[project.optional-dependencies]
+# plot_network_output (AlphaGo/util.py) and benchmarks/_plot_sgf_heatmaps.py only -
+# never imported by the trainer or any play_tests/ script that doesn't visualize.
+viz = [
+    "matplotlib>=3.10.9",
+]
+# interface/gtp_wrapper.py only, used by run_gtp_player.py - never imported by the
+# trainer or play_tests/ (match_networks.py, katago_verify.py, etc. don't speak GTP).
+gtp = [
+    "pygtp==0.3",
 ]
 
 [dependency-groups]

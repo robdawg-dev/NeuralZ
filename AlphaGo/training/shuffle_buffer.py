@@ -103,7 +103,7 @@ def build_game_index(shard_files, verbose=False):
     return games, feature_list, board_size, n_features
 
 
-def get_or_create_game_split(games, out_directory, train_val_test, verbose=False):
+def get_or_create_game_split(games, out_directory, train_val_test, verbose=False, seed=None):
     """Split games into train/val/test at the GAME level (not position level - positions
     within one game are highly correlated, so splitting at the position level risks the
     same game appearing in both train and validation).
@@ -113,6 +113,16 @@ def get_or_create_game_split(games, out_directory, train_val_test, verbose=False
     silently drawing a new random one. If that file exists, the current set of game ids
     found must match exactly what's recorded - a changed shard directory since the split
     was created is treated as an error rather than silently guessed at.
+
+    seed: controls the split drawn for a FRESH out_directory (no existing game_split.json).
+    Without this, every fresh out_directory silently drew an independently-random split
+    even when the caller passed the same --seed everywhere else (that seed only ever
+    reached the shuffle buffer's position ordering/sampling, never which games land in
+    train/val/test to begin with) - confirmed the hard way: two runs compared at matched
+    steps under supposedly identical seeds/LR schedules turned out to differ because their
+    train sets only overlapped ~93%, not because of anything LR-related. Passing the same
+    seed here now makes a fresh split reproducible across separate out_directories, the
+    same way the position-level seed already was.
     """
     split_file = os.path.join(out_directory, "game_split.json")
     by_id = {g["id"]: g for g in games}
@@ -136,7 +146,7 @@ def get_or_create_game_split(games, out_directory, train_val_test, verbose=False
             print("loaded existing game split from {}".format(split_file))
     else:
         ids = list(by_id.keys())
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(seed)
         rng.shuffle(ids)
         n = len(ids)
         n_train = int(train_val_test[0] * n)

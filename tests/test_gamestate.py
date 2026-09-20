@@ -1,4 +1,4 @@
-import parseboard
+from tests import parseboard
 import unittest
 import AlphaGo.go as go
 from AlphaGo.go import GameState
