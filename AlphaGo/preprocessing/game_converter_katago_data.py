@@ -31,14 +31,22 @@ and "which filters made this?" is not answerable from a directory listing.
 used and because supervised_policy_trainer_v3 notes a single file degrades badly on
 spinning disk past ~100-150GB. Output file names match what find_shard_files globs.
 
-Filters (all default OFF)
--------------------------
---skip-setup-positions N
+Correctness (default ON)
+------------------------
+--skip-setup-positions N            [default 7]
     Drop the first N positions of games carrying AB/AW setup stones. Those games arrive
     with their real move order discarded, so turns_since reports the pre-placed position as
     though it had just been played move by move. There are only 7 "recent" age planes, so
     the error is bounded at 7 stones and self-corrects once 7 real moves exist - measured
     at ~1% of all positions. N=7 makes turns_since exactly correct for ~1% cost.
+
+    This defaults to 7 because turns_since is in the 48-plane feature set: at 0 the
+    converter emits tensors that are known-wrong. Set 0 only to reproduce older output.
+    See get_turns_since in preprocessing.pyx. The value is tuned for turns_since -
+    last_moves is not in use and would need its own treatment (5, not 7).
+
+Filters (all default OFF)
+-------------------------
 
 --max-winrate-loss X
     Drop a position whose label is a move that gave up more than X winrate. KataGo records
@@ -400,7 +408,7 @@ def _chunks(iterable, size):
 
 
 def convert(source, out_dir, features, bd_size=19, workers=None, shard_bytes=20 * 10 ** 9,
-            skip_setup_positions=0, max_winrate_loss=None, drop_hopeless_mover=None,
+            skip_setup_positions=7, max_winrate_loss=None, drop_hopeless_mover=None,
             resume=False, limit=None, quiet=False, conversion_args="{}"):
     import concurrent.futures
 
@@ -566,7 +574,7 @@ def main(cmd_line_args=None):
     parser.add_argument("--quiet", action="store_true", help="Suppress the periodic progress line")  # noqa: E501
 
     g = parser.add_argument_group("position filters (all default OFF; the summary reports what each would cost regardless)")  # noqa: E501
-    g.add_argument("--skip-setup-positions", type=int, default=0, help="Drop the first N positions of games carrying AB/AW setup stones. N=7 makes turns_since exactly correct, for ~1%% of positions.")  # noqa: E501
+    g.add_argument("--skip-setup-positions", type=int, default=7, help="Drop the first N positions of games carrying AB/AW setup stones. Default 7, which makes turns_since exactly correct for ~1%% of positions; 0 emits known-wrong tensors.")  # noqa: E501
     g.add_argument("--max-winrate-loss", type=float, default=None, help="Drop a position whose label gave up more than this much winrate (e.g. 0.10). Blind once the winrate saturates - see --drop-hopeless-mover.")  # noqa: E501
     g.add_argument("--drop-hopeless-mover", type=float, default=None, help="Drop positions where the player to move is at or below this winrate (e.g. 0.05). Asymmetric: keeps the winning side's moves.")  # noqa: E501
 

@@ -121,9 +121,12 @@ def test_clean_game_emits_every_move(tmp_path):
 
 def test_suicide_truncates_and_never_emits_the_suicide_itself(tmp_path):
     """The prefix is valid data and is kept; the suicide is neither applied nor emitted.
-    Suicide is illegal under both rulesets KGS offers, so it must not become a label."""
+    Suicide is illegal under both rulesets KGS offers, so it must not become a label.
+
+    skip_setup_positions=0 because the fixture needs AB/AW stones to build the suicide
+    shape - this test is about truncation, not about the setup skip."""
     src = _corpus(tmp_path, a=SUICIDE)
-    _run(src, tmp_path / "out")
+    _run(src, tmp_path / "out", skip_setup_positions=0)
     shards, games, n = _positions(tmp_path / "out")
     assert n == 2, "expected the two legal moves before the suicide"
     with h5.File(shards[0]) as f:
@@ -178,17 +181,28 @@ def test_drop_hopeless_mover_is_asymmetric(tmp_path):
 
 def test_skip_setup_positions_only_affects_setup_stone_games(tmp_path):
     src = _corpus(tmp_path, setup=WITH_SETUP, clean=CLEAN)
-    _run(src, tmp_path / "off")
+    _run(src, tmp_path / "off", skip_setup_positions=0)
     _run(src, tmp_path / "on", skip_setup_positions=7)
     before = _positions(tmp_path / "off")[2]
     after = _positions(tmp_path / "on")[2]
     assert before - after == 7, "expected exactly 7 positions dropped, from one game only"
 
 
-def test_filters_are_off_by_default(tmp_path):
+def test_optional_filters_are_off_by_default(tmp_path):
+    """The winrate/hopeless filters stay off; the setup skip does not (see below)."""
     src = _corpus(tmp_path, a=CLEAN, b=WITH_SETUP)
-    _run(src, tmp_path / "out")
+    _run(src, tmp_path / "out", skip_setup_positions=0)
     assert _positions(tmp_path / "out")[2] == 4 + 20
+
+
+def test_setup_skip_is_on_by_default(tmp_path):
+    """turns_since is wrong for the first 7 positions of a setup-bearing game, so the
+    converter must not emit them unless explicitly told otherwise."""
+    src = _corpus(tmp_path, a=CLEAN, b=WITH_SETUP)
+    _run(src, tmp_path / "default")
+    _run(src, tmp_path / "explicit_off", skip_setup_positions=0)
+    assert _positions(tmp_path / "default")[2] == 4 + 20 - 7
+    assert _positions(tmp_path / "explicit_off")[2] == 4 + 20
 
 
 # ---------------------------------------------------------------------------

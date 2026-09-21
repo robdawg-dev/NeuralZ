@@ -71,6 +71,39 @@ cdef class Preprocess:
            Note:
            - the [maximum-1] plane is used for any stone with age greater than or equal to maximum
            - EMPTY locations are all-zero features
+
+           SETUP STONES (SGF AB/AW):
+             place_handicap_stone appends to moves_history, so setup stones are
+             indistinguishable from played moves in the loops below. This affects handicap
+             placements and, far more commonly in KataGo selfplay data, sgfpos/fork/hintpos
+             games whose whole mid-game start position is serialized as an AB/AW block of
+             50-100 stones (43.7% of a 60k-file sample carried setup stones; ~87% of those
+             were whole-board resumptions, not handicap).
+
+             The AB/AW block carries NO temporal information - three separate reasons:
+               1. It is a raster scan of the board. Measured on 400 sgfpos files, the AB
+                  and AW lists are in row-major board order 100% of the time. The last
+                  stone in the list is the bottom-right one, not the most recent.
+               2. util.py applies all AB then all AW, so moves_history begins with every
+                  black stone followed by every white stone. The "7 most recent moves"
+                  read off it are 7 same-coloured stones - a shape alternating play can
+                  never produce.
+               3. It is the board STATE, not the move list: captured stones are simply
+                  absent. In 38.5% of sgfpos files nAB+nAW < init_turn_num (p90 = 7
+                  stones missing, max 73).
+
+             So plane 7 is not a claim that these stones are old - it is the only bucket
+             that does not commit to a specific age.
+
+             Consequence: until 7 real moves have been played, setup stones occupy age
+             planes 0-6 and this feature is WRONG. From the 7th real move on it is exactly
+             correct, because plane 7 ("age >= 7") is the right bucket for a stone placed
+             before the game began. Verified empirically: contamination at position index
+             0-6, clean from 7 onward.
+
+             game_converter_katago_data.py therefore drops the first 7 positions of any
+             setup-bearing game by default (--skip-setup-positions, ~1% of all positions).
+             Do not generate training data with that set to 0.
         """
 
         cdef location_t location
@@ -105,6 +138,30 @@ cdef class Preprocess:
            - unlike turns_since, this is not tied to whether the stone is still on the board -
              a later capture does not erase the mark
            - a pass, or a move further back than history extends, leaves its plane all-zero
+
+           NOT IN USE - DO NOT ENABLE FOR TRAINING WITHOUT READING THIS.
+             This feature has the same setup-stone defect as get_turns_since (see there):
+             SGF AB/AW stones live in moves_history and are marked here as though they were
+             the last moves played. It is worse off than turns_since in two ways:
+
+               1. There is no "older" bucket. turns_since has plane 7 to absorb setup
+                  stones once 7 real moves exist; here all 5 planes are recency planes, so
+                  a setup stone is either marked as a recent move or not represented. Since
+                  the AB/AW order is a row-major board scan (see get_turns_since), that
+                  means marking whichever stones happen to sort last as "the last 5 moves".
+               2. There is no occupancy test, by design (see the first note above), so the
+                  guard that lets turns_since reject captured stones cannot be reused to
+                  reject setup stones either.
+
+             Dropping the first 5 positions of setup-bearing games would fix it the same
+             way --skip-setup-positions fixes turns_since, but that is NOT wired up and NOT
+             tested. The converter's skip is sized for turns_since (7), not for this.
+
+             Measured relationship to turns_since, for reference: with no captures, planes
+             0-4 here are IDENTICAL to turns_since planes 0-4 (passes and setup stones
+             included - both consume an age slot the same way). They diverge only when a
+             capture or self-capture lands inside the last 5 plies: 7.30% of positions
+             overall, but 0.47% before move 50 and 13.88% after move 200.
         """
 
         cdef int n_moves = state.moves_history.size()
