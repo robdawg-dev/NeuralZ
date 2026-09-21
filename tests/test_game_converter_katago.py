@@ -195,6 +195,42 @@ def test_optional_filters_are_off_by_default(tmp_path):
     assert _positions(tmp_path / "out")[2] == 4 + 20
 
 
+def _asym_game(weak="B", n=24):
+    """A game where one colour is searched far less than the other, as gtype=asym does."""
+    moves = []
+    for i in range(n):
+        colour = "B" if i % 2 == 0 else "W"
+        x, y = chr(ord("a") + (i % 19)), chr(ord("a") + (i // 19))
+        v = 140 if colour == weak else 380
+        moves.append(";{}[{}{}]C[0.50 0.50 0.00 0.0 v={} weight=1.00]".format(
+            colour, x, y, v))
+    return "(;GM[1]FF[4]SZ[19]KM[7.5]C[gtype=asym]" + "".join(moves) + ")"
+
+
+def test_drop_weak_side_removes_only_the_under_searched_colour(tmp_path):
+    """asym runs the handicap-receiving side at ~142 visits vs 373, and it blunders 3.6x
+    more. Those moves are a deliberately weakened player, so they must not be imitated."""
+    src = _corpus(tmp_path, a=_asym_game(weak="B", n=24))
+    _run(src, tmp_path / "off")
+    _run(src, tmp_path / "on", drop_weak_side_ratio=1.5)
+    assert _positions(tmp_path / "off")[2] == 24
+    assert _positions(tmp_path / "on")[2] == 12, "expected the 12 Black moves dropped"
+
+
+def test_drop_weak_side_is_a_noop_on_symmetric_games(tmp_path):
+    """Detection is per game from v= counts, not from gtype, so an even game must survive
+    untouched however aggressive the ratio."""
+    src = _corpus(tmp_path, a=_asym_game(weak=None, n=24))
+    _run(src, tmp_path / "out", drop_weak_side_ratio=1.5)
+    assert _positions(tmp_path / "out")[2] == 24
+
+
+def test_drop_weak_side_is_off_by_default(tmp_path):
+    src = _corpus(tmp_path, a=_asym_game(weak="B", n=24))
+    _run(src, tmp_path / "out")
+    assert _positions(tmp_path / "out")[2] == 24
+
+
 def test_setup_skip_is_on_by_default(tmp_path):
     """turns_since is wrong for the first 7 positions of a setup-bearing game, so the
     converter must not emit them unless explicitly told otherwise."""

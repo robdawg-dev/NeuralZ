@@ -359,13 +359,22 @@ stage A is settled.
 
 ### A. Blocks everything - decide first
 
-- [ ] **A1. A/B measurement protocol.** Will filter configs be compared? If yes, a
-      **single fixed evaluation set** must be generated once with no filtering, held out
-      from every config's training games, and used identically by all runs. Otherwise
-      `val_loss` is not comparable across configs, because each config's val set contains
-      different positions. Also fix `--epoch-length` across runs, or compare at matched
-      step counts, so the cosine LR schedule is not confounded by dataset size.
-      *Constrains how splits are produced, so it cannot be decided later.*
+- [x] **A1. A/B measurement protocol.** **DECIDED 2026-09-21: no A/B.** One set, one run,
+      move forward. No time for multiple training runs.
+
+      Consequences, all simplifying:
+      - **A5 needs one target, not two.**
+      - **C4 stays off permanently** rather than being held as the A/B candidate. Same for
+        C5. If either is ever revisited it needs a training run, not a data decision.
+      - No fixed evaluation set has to be generated or held out.
+      - `--epoch-length` no longer has to be matched across runs, but still needs to be set
+        sensibly for the chosen dataset size, because the cosine LR schedule is defined over
+        total steps. Worth checking against A5 before launching.
+
+      **Accepted cost:** filter choices cannot be validated empirically. Every decision in
+      this document rests on measurement of the *data*, not on measured model quality. This
+      is why the settled position is to remove only demonstrably wrong labels (B1, C3,
+      together well under 1%) and leave distribution-reshaping filters off.
 
 - [ ] **A2. Feature set.** Keeping the 48 planes, or changing? Baked into the h5.
       Sub-questions: add `last_moves` (needs the B1 fix first)? Add a **komi plane** (see
@@ -424,25 +433,43 @@ stage A is settled.
       carry a pass within the last 7 plies, and 98% of those sit past move 200, where
       `ai.py:101` makes the bot pass back without consulting the network at all.
 
-- [ ] **B3. `asym` mitigation - currently a gap.** `asym` was KEPT on the stated basis that
-      the weakened side would be identified at conversion from visit counts. **That was
-      never built.** Today its moves train unmitigated (229 visits, 1.36% blunder rate vs
-      0.69%). Choose one:
-      (a) build it - per game, median visits by colour, drop the low side above a ~1.5x
-      ratio (~15 lines);
-      (b) decide 229 visits is acceptable, consistent with keeping the ~240-visit
-      cheap-search moves, and correct the doc;
-      (c) re-open excluding `asym` - but that also removes ~half the handicap data.
-      **Recommendation: (a).**
+- [x] **B3. `asym` mitigation.** **RESOLVED 2026-09-21: option (d) - keep `asym`, let
+      `--max-winrate-loss` remove its bad moves.** None of (a)/(b)/(c) as originally framed.
 
-- [ ] **B4. Split + shuffle move into the converter** *(agreed in principle)*:
-      - [ ] B4a. Split ratios - keep `0.93 / 0.05 / 0.02`?
-      - [ ] B4b. Split at the **game** level, then shuffle positions within each split.
-            *(Considered non-negotiable - positions within a game are correlated.)*
-      - [ ] B4c. Small runtime shuffle buffer in the trainer (~100k), or fully serial?
-      - [ ] B4d. **Accept the schema break?** Shuffled positions make `file_offsets`
-            meaningless, so these shards will not load in the current `v3` trainer. Needs a
-            new reader.
+      The visit-ratio idea in (a) was dropped because the premise did not survive
+      measurement: blunder rate by visit count is 0.248% below 200 visits vs 0.053% above
+      1000 - real, but a 0.2pp gap. Filtering on visits would discard large volume to avoid
+      a difference that leaves **99.75% of low-visit moves clean**. `asym`'s median visits
+      (339) are in fact *higher* than `normal`'s (302), so its problem was never search
+      depth.
+
+      What `asym` actually has is visibly bad moves: **0.27% loss>.10 vs `normal`'s 0.12%**,
+      and it contributes **7.2% of all visible blunders while being 3.7% of annotated
+      positions** - ~2x over-represented. So the winrate-loss filter catches it
+      disproportionately without discarding the games, which matters because 84% of `asym`
+      games are handicap games.
+
+      **`asym` remains the recurring culprit** - worst blunder rate, worst komi deviations
+      from the handicap compensation line (16.3% of its handicap games >40pts off), and the
+      source of the 100-point handicap blowouts (B+102.5, B+100, B+94.5). B6's komi fix also
+      raised its share (1,162 -> 2,067 files). If a trained model disappoints, this is the
+      first thing to re-open.
+
+- [x] **B4. Split + shuffle move into the converter.** **DEFERRED 2026-09-21: keep the
+      existing runtime shuffle buffer.** It works; revisit later if there is reason to.
+
+      **This removes the only blocker to using the current trainer.** B4d would have been a
+      schema break: shuffled positions make `file_offsets` meaningless, so converter-shuffled
+      shards would not load in `supervised_policy_trainer_v3` without a new reader. Keeping
+      the runtime buffer means the shards this pipeline produces are readable by the trainer
+      as it stands today, with no reader work.
+
+      Still true, and still the argument for doing it eventually: a 400k reservoir over
+      position-ordered shards gives weaker mixing than a true global shuffle, and the
+      train/val/test split is decided at runtime rather than being a fixed property of the
+      data. Neither is wrong, and with A1 = no A/B the split no longer has to be reproducible
+      across runs - which was the main reason to move it. Sub-decisions a-d are parked
+      unchanged if it is reopened.
 
 - [ ] **B5. Make counterfactual thresholds configurable.** `_CF_LOSS`, `_CF_HOPELESS`,
       `_CF_SKIP` are hard-coded, so sizing `--drop-hopeless-mover` at anything other than
@@ -478,11 +505,47 @@ stage A is settled.
       resumptions, not handicap - and that a blanket setup-stone filter would have removed
       100% of `handicap` and 84% of `asym`, i.e. exactly the handicap data wanted for
       play against handicap opponents.
-- [ ] **C3. `--max-winrate-loss`.** 0.05 (0.50%) / **0.10 (0.12%, recommended)** / 0.20
-      (0.02%).
-- [ ] **C4. `--drop-hopeless-mover`.** 20.9% at 0.05 - the only expensive filter and the
-      only genuinely contested one. **Recommendation: OFF for the first set; this is the
-      A/B candidate if A1 says yes.**
+- [x] **C3. `--max-winrate-loss` = 0.10.** **DECIDED 2026-09-21.** Measured cost 0.14% of
+      positions (validated: sample parse reproduces the manifest's 0.14% exactly).
+
+      This is the only filter that is a **direct observation** rather than a proxy - these
+      are moves KataGo's own search says gave up >=10% winrate. And the converter drops the
+      *move* while the generator advances, so the position *after* a blunder is still
+      emitted with the punishing move as its label: **you keep the refutation and lose only
+      the error.**
+
+      > **ACTION REQUIRED AT GENERATION TIME.** The flag defaults to `None` (off), per the
+      > converter's "Filters (all default OFF)" structure. It must be passed explicitly:
+      > `--max-winrate-loss 0.10`. See the generation command recorded below.
+- [x] **C4. `--drop-hopeless-mover` = OFF.** **DECIDED 2026-09-21.** Already the default,
+      so no action needed.
+
+      Corrected measurement: it would drop **23.4%** of positions, and the winning-side
+      positions it *keeps* are a near-equal **23.2%** - so it is asymmetric in what it
+      removes without being lopsided in size. (An earlier figure of 28.0%/18.5% in this
+      session was wrong: the C[] winrate is already in White's frame and was being flipped
+      per-colour a second time.)
+
+      Two reasons to leave it off:
+      1. **It is a proxy.** Winrate-loss - how we *see* a bad move - collapses to zero where
+         the winrate is pinned (0.238% blunder rate in barely-decided games vs 0.015% in
+         fully-decided ones). We are structurally blind to move quality exactly where this
+         filter operates, so it acts on inference, not observation.
+      2. **It cuts into a known weakness.** What it removes is overwhelmingly endgame: turn
+         251+ falls from 15.2% to 11.0% of the set (and to 3.2% under the symmetric
+         variant). `run_gtp_player.py:47-49` records **0 of 50 matches reaching a clean
+         two-pass ending**, leaving dead stones uncaptured. Removing a quarter of the data,
+         weighted toward the phase the bot already fails at, is the most plausible way to
+         make that worse.
+
+      Still the natural A/B candidate if A1 says yes.
+
+- [x] **C4b. Visit-count filter = NONE.** **DECIDED 2026-09-21: do not build one.**
+      Blunder rate by visits: `<200` 0.248%, `200-299` 0.175%, `300-499` 0.162%, `500-999`
+      0.111%, `1000+` 0.053%. The gap is real (4.7x) but the absolute scale is not - 99.75%
+      of sub-200-visit moves are clean. Low-visit moves sit close to the raw policy net's
+      top choice, which is a legitimate imitation target; they are *less improved*, not
+      *wrong*. Not worth the volume.
 - [ ] **C5. Pre-`startTurnIdx` moves** - 7.5% of moves, played **without search**, which
       KataGo excludes from its own training. Currently recorded as KEPT, but the evidence
       is thinner than that status implies (20% of `normal` games are already lopsided by
@@ -499,13 +562,37 @@ stage A is settled.
       `FILE_TEST`, removed from the v1 trainer; excluded from every test run).
 - [ ] **D3. Rename `sgf_ok`** - it means *readable*, not *valid SGF*.
 
+### Generation command as currently decided
+
+Everything settled so far, in one place. The only non-default filter is C3.
+
+```
+python -m AlphaGo.preprocessing.sgf_preparation scan   <sgf_root> manifest.jsonl
+python -m AlphaGo.preprocessing.sgf_preparation select manifest.jsonl keeplist.txt
+python -m AlphaGo.preprocessing.game_converter_katago_data \
+    keeplist.txt <out_dir> \
+    --max-winrate-loss 0.10
+```
+
+Defaults already correct, deliberately not passed: `--skip-setup-positions 7` (B1, on by
+default), `--drop-hopeless-mover` off (C4), gtype exclusions `hintpos,hintfork,
+cleanuptraining` (C1), komi `[-10,30]` non-handicap only (B6).
+
+**Still unset and blocking a real run:** A1 (A/B protocol), A3/A4 (komi plane or band),
+A5 (target size), B4 (split+shuffle, including the B4d schema break), C5
+(pre-`startTurnIdx`).
+
+**The keep-list in `workspace/generation_testing/` is stale** - built before the B6 komi
+fix, so it is missing 1,986 games, ~half of them handicap. Re-run `select` before sizing
+anything from it.
+
 ### Dependency notes
 
 ```
 A3 = "add komi plane"   ->  A4 moot, A2 changes, retrain from scratch
-A1 = "yes, A/B"         ->  C4 stays open, A5 needs two sets
 B1                      ->  decide B2 in the same edit
-B4d                     ->  a new reader is required before any training
+B4 deferred             ->  B4d moot; current v3 trainer reads these shards as-is
+A1 = "no A/B"           ->  C4/C5 stay off; A5 needs one target only
 ```
 
 ### Settled - not worth reopening

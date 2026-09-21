@@ -98,18 +98,20 @@ _RE_BRACKET = re.compile(r"\[([^\]]*)\]")
 _CF_LOSS = (0.05, 0.10, 0.20)
 _CF_HOPELESS = (0.05,)
 _CF_SKIP = (7,)
+_CF_WEAK = (1.5,)
 
 
 class _Cfg(object):
     """Picklable filter configuration handed to each worker."""
 
     def __init__(self, features, bd_size, skip_setup_positions, max_winrate_loss,
-                 drop_hopeless_mover):
+                 drop_hopeless_mover, drop_weak_side_ratio=None):
         self.features = features
         self.bd_size = bd_size
         self.skip_setup_positions = skip_setup_positions
         self.max_winrate_loss = max_winrate_loss
         self.drop_hopeless_mover = drop_hopeless_mover
+        self.drop_weak_side_ratio = drop_weak_side_ratio
 
 
 _worker = {}
@@ -151,6 +153,43 @@ def _annotations(text):
                 break
         out.append((mover_w, loss, visits))
     return out
+
+
+def _weak_side(text, ratio):
+    """The colour KataGo deliberately under-searched in this game, or None.
+
+    `gtype=asym` games run asymmetric playouts: one side gets far more search than the
+    other, and in handicap games it is the side RECEIVING the stones that is starved.
+    Measured over 1,200 asym handicap games: Black median 142 visits vs White 373 (2.63x),
+    and Black's blunder rate is 0.361% against 0.101% for Black in ordinary `gtype=handicap`
+    games - a 3.6x gap. Those moves are a deliberately weakened player, so imitating them
+    teaches exactly the wrong thing.
+
+    Detected per game from the `v=` counts rather than from gtype, so it also catches
+    asymmetry wherever else it appears and is a no-op (ratio 1.0) on symmetric games.
+    Returns go.BLACK / go.WHITE / None.
+    """
+    visits = {"B": [], "W": []}
+    for m in _RE_MOVE_ANNOT.finditer(text):
+        if m.group(3) is None:
+            continue
+        visits[m.group(1)].append(int(m.group(7)))
+    if len(visits["B"]) < 10 or len(visits["W"]) < 10:
+        return None
+    b = _median(visits["B"])
+    w = _median(visits["W"])
+    if b <= 0 or w <= 0:
+        return None
+    if w / b >= ratio:
+        return go.BLACK
+    if b / w >= ratio:
+        return go.WHITE
+    return None
+
+
+def _median(values):
+    values = sorted(values)
+    return values[len(values) // 2]
 
 
 def _n_setup_stones(text):
@@ -197,6 +236,9 @@ def convert_one(path):
 
     ann = _annotations(text)
     has_setup = _n_setup_stones(text) > 0
+    weak_side = _weak_side(text, cfg.drop_weak_side_ratio) \
+        if cfg.drop_weak_side_ratio else None
+    cf_weak = {r: _weak_side(text, r) for r in _CF_WEAK}
     state = move = None
 
     try:
@@ -225,6 +267,9 @@ def convert_one(path):
                 for n in _CF_SKIP:
                     if i < n:
                         res["counterfactual"]["skip_setup_{}".format(n)] += 1
+            for r, side in cf_weak.items():
+                if side is not None and player == side:
+                    res["counterfactual"]["weak_side_{:.1f}x".format(r)] += 1
             if loss is not None:
                 for thr in _CF_LOSS:
                     if loss > thr:
@@ -245,6 +290,9 @@ def convert_one(path):
             if cfg.drop_hopeless_mover is not None and mover_w is not None \
                     and mover_w <= cfg.drop_hopeless_mover:
                 res["n_dropped"]["hopeless_mover"] += 1
+                continue
+            if weak_side is not None and player == weak_side:
+                res["n_dropped"]["weak_side"] += 1
                 continue
 
             res["pairs"].append((proc.state_to_tensor(state)[0], move))
@@ -409,6 +457,7 @@ def _chunks(iterable, size):
 
 def convert(source, out_dir, features, bd_size=19, workers=None, shard_bytes=20 * 10 ** 9,
             skip_setup_positions=7, max_winrate_loss=None, drop_hopeless_mover=None,
+            drop_weak_side_ratio=None,
             resume=False, limit=None, quiet=False, conversion_args="{}"):
     import concurrent.futures
 
@@ -426,7 +475,7 @@ def convert(source, out_dir, features, bd_size=19, workers=None, shard_bytes=20 
             .format(out_dir))
 
     cfg = _Cfg(features, bd_size, skip_setup_positions, max_winrate_loss,
-               drop_hopeless_mover)
+               drop_hopeless_mover, drop_weak_side_ratio)
     n_features = Preprocess(features, size=bd_size).get_output_dimension()
 
     paths = _read_inputs(source)
@@ -492,7 +541,8 @@ def convert(source, out_dir, features, bd_size=19, workers=None, shard_bytes=20 
         writer.close()
 
     _report(stats, dropped, counterfactual, writer, errors, time.time() - start,
-            skip_setup_positions, max_winrate_loss, drop_hopeless_mover)
+            skip_setup_positions, max_winrate_loss, drop_hopeless_mover,
+            drop_weak_side_ratio)
     return writer
 
 
@@ -505,7 +555,8 @@ def _pct(n, d):
 
 
 def _report(stats, dropped, counterfactual, writer, errors, elapsed,
-            skip_setup_positions, max_winrate_loss, drop_hopeless_mover):
+            skip_setup_positions, max_winrate_loss, drop_hopeless_mover,
+            drop_weak_side_ratio=None):
     written = writer.total_positions
     emitted_plus_dropped = written + sum(dropped.values())
     print("\n" + "=" * 72)
@@ -550,6 +601,8 @@ def _report(stats, dropped, counterfactual, writer, errors, elapsed,
         active = []
         if skip_setup_positions:
             active.append("skip_setup_{}".format(skip_setup_positions))
+        if drop_weak_side_ratio:
+            active.append("weak_side_{:.1f}x".format(drop_weak_side_ratio))
         for key, count in sorted(counterfactual.items()):
             flag = "  [ACTIVE]" if key in active else ""
             print("    {:22s} {:>10,}  ({:5.2f}%){}".format(
@@ -577,6 +630,7 @@ def main(cmd_line_args=None):
     g.add_argument("--skip-setup-positions", type=int, default=7, help="Drop the first N positions of games carrying AB/AW setup stones. Default 7, which makes turns_since exactly correct for ~1%% of positions; 0 emits known-wrong tensors.")  # noqa: E501
     g.add_argument("--max-winrate-loss", type=float, default=None, help="Drop a position whose label gave up more than this much winrate (e.g. 0.10). Blind once the winrate saturates - see --drop-hopeless-mover.")  # noqa: E501
     g.add_argument("--drop-hopeless-mover", type=float, default=None, help="Drop positions where the player to move is at or below this winrate (e.g. 0.05). Asymmetric: keeps the winning side's moves.")  # noqa: E501
+    g.add_argument("--drop-weak-side-ratio", type=float, default=None, help="Drop the moves of the deliberately under-searched side in asymmetric-playout games (e.g. 1.5 = drop a side searched 1.5x less than its opponent). Aimed at gtype=asym, where the handicap-RECEIVING side runs 142 visits vs 373 and blunders 3.6x more. No-op on symmetric games.")  # noqa: E501
 
     args = parser.parse_args(cmd_line_args)
     features = ALL_FEATURES if args.features.lower() == "all" else args.features.split(",")
@@ -587,6 +641,7 @@ def main(cmd_line_args=None):
         skip_setup_positions=args.skip_setup_positions,
         max_winrate_loss=args.max_winrate_loss,
         drop_hopeless_mover=args.drop_hopeless_mover,
+        drop_weak_side_ratio=args.drop_weak_side_ratio,
         resume=args.resume, limit=args.limit, quiet=args.quiet,
         conversion_args=json.dumps(vars(args), sort_keys=True))
 
