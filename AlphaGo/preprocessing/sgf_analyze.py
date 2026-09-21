@@ -128,17 +128,26 @@ WEIGHT_EDGES = [0.001, 0.1, 0.5, 1.0, 2.0]
 MOVES_EDGES = [50, 100, 200, 300, 400, 600]
 
 
-def scan_file_cheap(path):
+def scan_file_cheap(path, text=None, board_size="19", short_circuit=False):
     """Text-only scan of one SGF. Returns a flat dict of findings; never raises for
-    malformed content (a file that cannot be read or has no moves is itself a finding)."""
+    malformed content (a file that cannot be read or has no moves is itself a finding).
+
+    text: pass already-read contents to avoid a second open(). At corpus scale the file
+    open dominates - reading each file twice measured ~2x slower end to end.
+
+    short_circuit: stop as soon as the board size disqualifies the file. Board size is the
+    one criterion that is never revisited (this project will only ever train 19x19), so
+    there is nothing to lose by not gathering the rest.
+    """
     rec = {"path": path, "reasons": []}
-    try:
-        with open(path, "r", errors="replace") as f:
-            text = f.read()
-    except OSError as e:
-        rec["reasons"].append("unreadable")
-        rec["error"] = str(e)
-        return rec
+    if text is None:
+        try:
+            with open(path, "r", errors="replace") as f:
+                text = f.read()
+        except OSError as e:
+            rec["reasons"].append("unreadable")
+            rec["error"] = str(e)
+            return rec
 
     rec["bytes"] = len(text)
 
@@ -146,8 +155,10 @@ def scan_file_cheap(path):
     m = _RE_SZ.search(text)
     size = m.group(1) if m else None
     rec["size"] = size
-    if size != "19":
-        rec["reasons"].append("not_19x19")
+    if size != board_size:
+        rec["reasons"].append("not_{0}x{0}".format(board_size))
+        if short_circuit:
+            return rec
 
     # provenance
     gtype = None
