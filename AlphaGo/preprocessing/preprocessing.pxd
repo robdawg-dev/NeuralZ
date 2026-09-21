@@ -2,7 +2,6 @@ from AlphaGo.go.constants cimport stone_t, group_t, action_t
 from AlphaGo.go.game_state cimport GameState
 from AlphaGo.go.group_logic cimport Group, group_new, group_add_stone, group_add_liberty, \
     group_remove_liberty, group_merge, group_lookup
-from AlphaGo.go.coordinates cimport get_pattern_hash
 from AlphaGo.go.ladders cimport is_ladder_escape_move, is_ladder_capture_move, \
     get_plausible_escape_moves, get_plausible_capture_moves
 from libcpp cimport bool
@@ -52,11 +51,6 @@ cdef class Preprocess:
 
     # Board size, same convention as in GameState
     cdef short size, board_size
-
-    # Sets of pattern hashes of the Top-N most common response patterns of each type
-    cdef set pattern_nakade
-    cdef set pattern_response_12d
-    cdef set pattern_non_response_3x3
 
     ############################################################################
     #   Feature-generating functions                                           #

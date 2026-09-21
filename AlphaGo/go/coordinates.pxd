@@ -12,7 +12,6 @@ cimport numpy as np
 ############################################################################
 
 ctypedef short location_t
-ctypedef unsigned long pattern_hash_t
 ctypedef vector[location_t] pattern_t  # lookup of neighbor coordinates (or border)
 ctypedef shared_ptr[Group] group_ptr_t  # smart pointer with reference counting wrapping a 'Group'
 ctypedef vector[group_ptr_t] board_group_t  # type for group-lookup by board position
@@ -45,14 +44,9 @@ cdef tuple calculate_tuple_location(location_t index, location_t size)
 """
 
 ############################################################################
-#   Neighbor/pattern lookup table creation functions                       #
+#   Neighbor lookup table creation functions                               #
 #                                                                          #
 ############################################################################
-
-cdef pattern_hash_t get_pattern_hash(board_group_t &board, location_t center, int pattern_size, pattern_t &pattern_lookup, int max_liberty=*)  # noqa:E501
-"""Given a neighbor/pattern lookup table, computes a hash of the pattern around a location,
-   treating each color + liberty combination as a unique value (up to max_liberty).
-"""
 
 cdef pattern_t get_neighbors(location_t size)
 """Create array for every board location with all 4 direct neighbor locations
@@ -86,26 +80,4 @@ cdef pattern_t get_3x3_neighbors(location_t size)
 
     0-3 contains neighbors
     4-7 contains diagonals
-"""
-
-cdef pattern_t get_12d_neighbors(location_t size)
-"""Create array for every board location with 12d star neighbor locations
-   neighbor order: top star tip
-                   above left - above middle - above right
-                   left star tip - left - right - right star tip
-                   below left - below middle - below right
-                   below star tip
-
-            -2     x
-            -1    xxx
-                 xx xx
-            +1    xxx
-            +2     x
-
-            order:
-            -2     0
-            -1    123
-                 45 67
-            +1    89a
-            +2     b
 """

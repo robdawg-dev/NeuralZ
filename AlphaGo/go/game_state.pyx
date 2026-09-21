@@ -26,12 +26,7 @@ cimport numpy as np
 # &table[size] safe to hold for the lifetime of a GameState.
 cdef cpp_map[short, pattern_t] neighbor_by_size
 cdef cpp_map[short, pattern_t] neighbor3x3_by_size
-cdef cpp_map[short, pattern_t] neighbor12d_by_size
 cdef cpp_map[short, vector[zobrist_hash_t]] zobrist_by_size
-
-
-# Constant value used to generate pattern hashes (TODO: move elsewhere)
-cdef int _HASHVALUE = 33
 
 
 ############################################################################
@@ -90,7 +85,6 @@ cdef class GameState:
     # Neighbors lookup tables
     cdef pattern_t* neighbor
     cdef pattern_t* neighbor3x3
-    cdef pattern_t* neighbor12d
 
     # Zobrist hashing
     cdef zobrist_hash_t zobrist_current
@@ -215,7 +209,7 @@ cdef class GameState:
         """Create new instance of GameState. If copy is supplied, creates a deep copy of another
            state. Otherwise, creates an empty state.
         """
-        global neighbor_by_size, neighbor3x3_by_size, neighbor12d_by_size, zobrist_by_size
+        global neighbor_by_size, neighbor3x3_by_size, zobrist_by_size
 
         if copy is not None:
             size = copy.size
@@ -227,7 +221,6 @@ cdef class GameState:
         if neighbor_by_size.count(size) == 0:
             neighbor_by_size[size] = get_neighbors(size)
             neighbor3x3_by_size[size] = get_3x3_neighbors(size)
-            neighbor12d_by_size[size] = get_12d_neighbors(size)
             zobrist_by_size[size] = get_zobrist_lookup(size)
 
         # Regardless of 'new' or 'duplicate', point at this size's tables. std::map keeps
@@ -235,7 +228,6 @@ cdef class GameState:
         # good even once tables for other sizes are added.
         self.ptr_neighbor = &neighbor_by_size[size]
         self.ptr_neighbor3x3 = &neighbor3x3_by_size[size]
-        self.ptr_neighbor12d = &neighbor12d_by_size[size]
         self.ptr_zobrist_lookup = &zobrist_by_size[size]
 
         if copy is None:
@@ -455,43 +447,6 @@ cdef class GameState:
 
         # If made it to here, location must be a eye
         return True
-
-    ############################################################################
-    #   public cdef functions for feature generation (used by preprocessing)   #
-    #   TODO: move all of these to preprocessing itself                        #
-    ############################################################################
-
-    cdef pattern_hash_t get_12d_hash(self, location_t center, bool include_player, int max_liberty=3):  # noqa:E501
-        """Get unique-ish hash of the 12-stone pattern centered at 'center'. Assumes 'center'
-           itself is EMPTY. If 'include_player' is True, hash also takes into account who is the
-           current player.
-        """
-
-        # First compute hash for all stones around 'center'
-        cdef pattern_hash_t hsh = \
-            get_pattern_hash(self.board, center, 12, d(self.ptr_neighbor12d), max_liberty)
-
-        # If specified, also include the current player as part of the hash
-        if include_player:
-            hsh += self.current_player
-            hsh *= _HASHVALUE
-
-        return hsh
-
-    cdef pattern_hash_t get_3x3_hash(self, short center, bool include_player, int max_liberty=3):
-        """Get unique-ish hash of the 8-stone pattern centered at 'center'. Assumes 'center' itself
-           is EMPTY. If 'include_player' is True, hash also takes into account who is the current
-           player.
-        """
-        cdef pattern_hash_t hsh = \
-            get_pattern_hash(self.board, center, 8, d(self.ptr_neighbor3x3), max_liberty)
-
-        # If specified, also include the current player as part of the hash
-        if include_player:
-            hsh += self.current_player
-            hsh *= _HASHVALUE
-
-        return hsh
 
     cdef vector[location_t] get_sensible_moves(self):
         """'Sensible' moves are all legal moves that are not eyes of the current player.

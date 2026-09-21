@@ -29,11 +29,6 @@ cdef class Preprocess:
 
     # Board size, same convention as in GameState
     cdef short size, board_size
-
-    # Sets of pattern hashes of the Top-N most common response patterns of each type
-    cdef set pattern_nakade
-    cdef set pattern_response_12d
-    cdef set pattern_non_response_3x3
     """
 
     ############################################################################
@@ -363,7 +358,7 @@ cdef class Preprocess:
     #                                                                          #
     ############################################################################
 
-    def __init__(self, list feature_list, char size=19, dict_nakade=None, dict_3x3=None, dict_12d=None, verbose=False):  # noqa: E501
+    def __init__(self, list feature_list, char size=19, verbose=False):
         self.size = size
         self.board_size = size * size
 

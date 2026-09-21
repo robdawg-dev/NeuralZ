@@ -1,6 +1,6 @@
 from AlphaGo.go.constants cimport stone_t, group_t, action_t
 from AlphaGo.go.coordinates cimport calculate_board_location, calculate_tuple_location, \
-    get_pattern_hash, get_neighbors, get_3x3_neighbors, get_12d_neighbors
+    get_neighbors, get_3x3_neighbors
 from AlphaGo.go.group_logic cimport Group, group_new, group_duplicate, group_add_stone, \
     group_merge, group_get_stone, group_remove_stone, group_add_liberty, group_remove_liberty
 from AlphaGo.go.zobrist cimport get_zobrist_lookup, update_hash_by_location, update_hash_by_group
@@ -19,7 +19,6 @@ cimport numpy as np
 ############################################################################
 
 ctypedef short location_t
-ctypedef unsigned long pattern_hash_t
 ctypedef unsigned long long zobrist_hash_t
 ctypedef vector[location_t] pattern_t  # lookup of neighbor coordinates (or border)
 ctypedef shared_ptr[Group] group_ptr_t  # smart pointer with reference counting wrapping a 'Group'
@@ -79,7 +78,6 @@ cdef class GameState:
     # all instances of GameState.
     cdef pattern_t* ptr_neighbor
     cdef pattern_t* ptr_neighbor3x3
-    cdef pattern_t* ptr_neighbor12d
 
     # Zobrist hashing
     cdef zobrist_hash_t zobrist_current
@@ -157,21 +155,6 @@ cdef class GameState:
 
     ############################################################################
     #   public cdef functions used by preprocessing                            #
-    #                                                                          #
-    ############################################################################
-
-    cdef pattern_hash_t get_12d_hash(self, location_t center, bool include_player, int max_liberty=*)  # noqa:E501
-    """Get unique-ish hash of the 12-stone pattern centered at 'center'. Assumes 'center'
-       itself is EMPTY. If 'include_player' is True, hash also takes into account who is the
-       current player.
-    """
-
-    cdef pattern_hash_t get_3x3_hash(self, short center, bool include_player, int max_liberty=*)
-    """Get unique-ish hash of the 8-stone pattern centered at 'center'. Assumes 'center' itself
-       is EMPTY. If 'include_player' is True, hash also takes into account who is the current
-       player.
-    """
-
     cdef vector[location_t] get_sensible_moves(self)
     """'Sensible' moves are all legal moves that are not eyes of the current player.
     """
