@@ -8,6 +8,7 @@ from libcpp cimport bool
 from libcpp.vector cimport vector
 from libcpp.memory cimport shared_ptr
 from libcpp.unordered_set cimport unordered_set as cpp_set
+from libcpp.map cimport map as cpp_map
 import numpy as np
 cimport numpy as np
 
@@ -60,8 +61,16 @@ cdef class GameState:
     # List with move history
     cdef vector[location_t] moves_history
 
-    # Number of handicap stones placed by BLACK at the start of the game
+    # Number of SETUP stones placed before play began, of either colour (SGF AB and AW).
+    # This is the boundary of the setup block in moves_history - i.e. where real
+    # alternating play starts - and is what the superko pre-filter keys off.
     cdef short num_handicap
+
+    # Of those setup stones, how many were placed by BLACK. Only this many count as
+    # handicap stones for get_handicaps()/SGF export. Assumes the black setup stones come
+    # first in the block, which is how _sgf_init_gamestate and place_handicaps() place
+    # them (all AB, then all AW).
+    cdef short num_black_handicap
 
     # List with legal moves
     cdef vector[location_t] legal_moves

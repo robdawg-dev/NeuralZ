@@ -322,7 +322,14 @@ cdef class Preprocess:
         """Plane filled with zeros
         """
 
-        # Nothing to do; all features begin with zeros.         return offset + 1
+        # Nothing to do; the tensor is zero-initialised in state_to_tensor. The return
+        # below is what advances the plane offset for whatever feature comes next - it
+        # previously sat on this comment line and was therefore never executed, making
+        # this function return 0 and silently reset the offset. Harmless only while
+        # "zeros" was last in the feature list; anything ordered after it was written
+        # starting at plane 0, on top of the board planes. color() delegates here, so it
+        # was broken for the value-net path regardless of ordering.
+        return offset + 1
 
     cdef int ones(self, GameState state, onehot_t[:, :] tensor, lookahead_t[:, :] groups_after, int offset):  # noqa: E501
         """Plane filled with ones

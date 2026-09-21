@@ -91,8 +91,13 @@ _RE_ROOT_C = re.compile(r"C\[([^\]]*gtype[^\]]*)\]")
 
 # --- moves and per-move annotations ------------------------------------------------
 _RE_MOVE = re.compile(r";([BW])\[([^\]]*)\]")
+# weight= is OPTIONAL: KataGo writes it from targetWeightByTurnUnrounded, which is only
+# populated when training data is being recorded. Rating games run with
+# doWriteTrainingData=false, so their comments carry win/loss/noResult/score and v= but no
+# weight= at all. Requiring it made this regex miss every annotation in a rating-game
+# corpus and report "0% annotated" for files that are in fact fully annotated.
 _RE_ANNOT = re.compile(
-    r"C\[\s*(-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) v=(\d+)(?: rv=(\d+))? weight=([\d.]+)")
+    r"C\[\s*(-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) v=(\d+)(?: rv=(\d+))?(?: weight=([\d.]+))?")
 # A node that opens with ';' but carries neither a B nor a W property. sgf_iter_states
 # replays the PREVIOUS move on such a node (see AUDIT_NOTES.md), truncating or dropping
 # the game, so it is worth counting even though KataGo does not currently emit any.
@@ -214,14 +219,19 @@ def scan_file_cheap(path):
     rec["n_annotated"] = len(annots)
     rec["n_reanalyzed"] = sum(1 for a in annots if a[5])
     if annots:
-        weights = [float(a[6]) for a in annots]
         visits = [int(a[4]) for a in annots]
+        weights = [float(a[6]) for a in annots if a[6]]
+        rec["n_weighted"] = len(weights)
         rec["n_weight_zero"] = sum(1 for w in weights if w == 0.0)
         rec["n_weight_pos"] = len(weights) - rec["n_weight_zero"]
         rec["visit_buckets"] = collections.Counter(_bucket(v, VISIT_EDGES) for v in visits)
         rec["weight_buckets"] = collections.Counter(_bucket(w, WEIGHT_EDGES) for w in weights)
+        if not weights:
+            # annotated with winrate/visits but no training weights - the signature of a
+            # rating (gatekeeper) game rather than a selfplay training game
+            rec["reasons"].append("no_training_weights")
     else:
-        rec["n_weight_zero"] = rec["n_weight_pos"] = 0
+        rec["n_weighted"] = rec["n_weight_zero"] = rec["n_weight_pos"] = 0
         rec["visit_buckets"] = collections.Counter()
         rec["weight_buckets"] = collections.Counter()
         if rec["n_moves"]:
@@ -360,6 +370,7 @@ class Aggregator:
         self.totals["moves"] += rec.get("n_moves", 0)
         self.totals["passes"] += rec.get("n_passes", 0)
         self.totals["annotated"] += rec.get("n_annotated", 0)
+        self.totals["weighted"] += rec.get("n_weighted", 0)
         self.totals["reanalyzed"] += rec.get("n_reanalyzed", 0)
         self.totals["weight_zero"] += rec.get("n_weight_zero", 0)
         self.totals["weight_pos"] += rec.get("n_weight_pos", 0)
@@ -431,14 +442,16 @@ def report(agg, elapsed, deep):
     _print_counter("AW SETUP STONES PER GAME (capped at 40)", agg.counters["n_aw"], total=n)
 
     print("\nPER-MOVE SEARCH METADATA")
-    print("    moves with v=/weight= annotation : {:,} ({:.2f}% of moves)".format(
+    print("    moves with a v=/winrate annotation : {:,} ({:.2f}% of moves)".format(
         t["annotated"], _pct(t["annotated"], t["moves"])))
+    print("    ...of those, carrying weight=      : {:,} ({:.2f}%)  [absent in rating games]".format(
+        t["weighted"], _pct(t["weighted"], t["annotated"])))
     print("    post-game reanalysed (rv=)       : {:,} ({:.2f}% of annotated)".format(
         t["reanalyzed"], _pct(t["reanalyzed"], t["annotated"])))
-    print("    weight == 0 (KataGo discards)    : {:,} ({:.2f}% of annotated)".format(
-        t["weight_zero"], _pct(t["weight_zero"], t["annotated"])))
-    print("    weight >  0 (KataGo trains on)   : {:,} ({:.2f}% of annotated)".format(
-        t["weight_pos"], _pct(t["weight_pos"], t["annotated"])))
+    print("    weight == 0 (KataGo discards)      : {:,} ({:.2f}% of weighted)".format(
+        t["weight_zero"], _pct(t["weight_zero"], t["weighted"])))
+    print("    weight >  0 (KataGo trains on)     : {:,} ({:.2f}% of weighted)".format(
+        t["weight_pos"], _pct(t["weight_pos"], t["weighted"])))
     _print_counter("  visit-count distribution", agg.counters["visits"], total=t["annotated"])
     _print_counter("  weight distribution", agg.counters["weights"], total=t["annotated"])
 

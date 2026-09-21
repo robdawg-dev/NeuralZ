@@ -12,14 +12,22 @@ cimport numpy as np
 #                                                                          #
 ############################################################################
 
-# Global arrays (lookup tables) for neighbor indices
-cdef pattern_t neighbor
-cdef pattern_t neighbor3x3
-cdef pattern_t neighbor12d
-cdef short neighbor_size
-
-# Global array for zobrist lookup
-cdef vector[zobrist_hash_t] zobrist_lookup
+# Global lookup tables for neighbor indices and zobrist hashing, keyed BY BOARD SIZE.
+#
+# Every GameState holds raw pointers into these (ptr_neighbor etc). They used to be single
+# vectors reassigned in place whenever a GameState of a different size was constructed,
+# which left every already-live state of the old size pointing at a table of the wrong
+# length - and with boundscheck=False that reads out of bounds rather than raising.
+# Confirmed: build a 19x19 state, construct a 9x9 state, call state_to_tensor on the 19x19
+# state -> SIGSEGV. Relevant because a mixed-size SGF corpus constructs both.
+#
+# std::map is used deliberately: it guarantees that references to existing elements stay
+# valid across later insertions (unlike vector, which reallocates). That is what makes
+# &table[size] safe to hold for the lifetime of a GameState.
+cdef cpp_map[short, pattern_t] neighbor_by_size
+cdef cpp_map[short, pattern_t] neighbor3x3_by_size
+cdef cpp_map[short, pattern_t] neighbor12d_by_size
+cdef cpp_map[short, vector[zobrist_hash_t]] zobrist_by_size
 
 
 # Constant value used to generate pattern hashes (TODO: move elsewhere)
@@ -69,8 +77,12 @@ cdef class GameState:
     # List with move history
     cdef vector[location_t] moves_history
 
-    # Number of handicap stones placed by BLACK at the start of the game
+    # Number of SETUP stones placed before play began, of either colour (SGF AB and AW).
+    # Marks the boundary of the setup block in moves_history.
     cdef short num_handicap
+
+    # Of those, how many were placed by BLACK - the genuine handicap stones.
+    cdef short num_black_handicap
 
     # List with legal moves
     cdef vector[location_t] legal_moves
@@ -118,6 +130,7 @@ cdef class GameState:
         self.capture_black, self.capture_white = 0, 0
         self.passes_black, self.passes_white = 0, 0
         self.num_handicap = 0
+        self.num_black_handicap = 0
 
         # 'board' represents all stones on the board by first pointing to all groups of stones.
         # Every group contains color, stone-locations and liberty locations. Border location is
@@ -162,6 +175,7 @@ cdef class GameState:
         self.passes_black = copy_state.passes_black
         self.passes_white = copy_state.passes_white
         self.num_handicap = copy_state.num_handicap
+        self.num_black_handicap = copy_state.num_black_handicap
         self.zobrist_current = copy_state.zobrist_current
         self.enforce_superko = copy_state.enforce_superko
 
@@ -201,29 +215,28 @@ cdef class GameState:
         """Create new instance of GameState. If copy is supplied, creates a deep copy of another
            state. Otherwise, creates an empty state.
         """
-        global neighbor, neighbor3x3, neighbor12d, zobrist_lookup, neighbor_size
+        global neighbor_by_size, neighbor3x3_by_size, neighbor12d_by_size, zobrist_by_size
 
         if copy is not None:
             size = copy.size
 
-        # Check if this is the first GameState object (of this size) and initialize globals.
-        if neighbor_size == 0 or neighbor_size != size:
-            # Initialize "neighbor" lookup tables
-            neighbor = get_neighbors(size)
-            neighbor3x3 = get_3x3_neighbors(size)
-            neighbor12d = get_12d_neighbors(size)
-            zobrist_lookup = get_zobrist_lookup(size)
+        # Build this size's lookup tables once, the first time a board of this size is
+        # seen. Tables for other sizes are left untouched, so states of different sizes
+        # can coexist - previously these were single globals overwritten in place, which
+        # silently invalidated the raw pointers held by every live state of the old size.
+        if neighbor_by_size.count(size) == 0:
+            neighbor_by_size[size] = get_neighbors(size)
+            neighbor3x3_by_size[size] = get_3x3_neighbors(size)
+            neighbor12d_by_size[size] = get_12d_neighbors(size)
+            zobrist_by_size[size] = get_zobrist_lookup(size)
 
-            # Set global size to detect whether globals need to be reinitialized for other GameState
-            # instances with different sizes (which is unlikely).
-            # TODO - global map from size to lookup table
-            neighbor_size = size
-
-        # Regardless of 'new' or 'duplicate', set pointers to global lookup tables and set size.
-        self.ptr_neighbor = &neighbor
-        self.ptr_neighbor3x3 = &neighbor3x3
-        self.ptr_neighbor12d = &neighbor12d
-        self.ptr_zobrist_lookup = &zobrist_lookup
+        # Regardless of 'new' or 'duplicate', point at this size's tables. std::map keeps
+        # references to existing elements valid across later insertions, so these stay
+        # good even once tables for other sizes are added.
+        self.ptr_neighbor = &neighbor_by_size[size]
+        self.ptr_neighbor3x3 = &neighbor3x3_by_size[size]
+        self.ptr_neighbor12d = &neighbor12d_by_size[size]
+        self.ptr_zobrist_lookup = &zobrist_by_size[size]
 
         if copy is None:
             self.initialize_new(size, enforce_superko)
@@ -744,7 +757,13 @@ cdef class GameState:
         if self.moves_history.size() > self.num_handicap:
             raise IllegalMove("Cannot place handicap on a started game")
 
+        # num_handicap tracks the whole setup block (both colours) because that is what
+        # marks where alternating play begins; num_black_handicap tracks only the stones
+        # that are genuinely BLACK handicap. Counting AW stones as black handicap made an
+        # HA[0] KataGo game with 15 AB + 13 AW report 28 handicaps from get_handicaps().
         self.num_handicap += 1
+        if color == stone_t.BLACK:
+            self.num_black_handicap += 1
         self.do_move(action, color)
 
     cpdef void place_handicaps(self, list handicap):
@@ -1078,7 +1097,7 @@ cdef class GameState:
            beginning of the game.
         """
 
-        n = min(self.num_handicap, self.moves_history.size())
+        n = min(self.num_black_handicap, self.moves_history.size())
         result = []
         for i in range(n):
             result.append(calculate_tuple_location(self.moves_history[i], self.size))

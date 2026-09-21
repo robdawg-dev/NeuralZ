@@ -36,6 +36,22 @@ class GameConverter:
             if state.get_size() != bd_size:
                 raise SizeMismatchError()
             if move != go.PASS:
+                # sgf_iter_states yields (position, move) BEFORE applying the move, so a
+                # move this engine will reject still arrives here once - and without this
+                # guard it was emitted as a training label, teaching the network the very
+                # move type we refuse to play. In practice that is a multi-stone suicide
+                # from a KataGo sui1 ruleset: 0.43% of games, one bad label each, and
+                # suicide is illegal under both rulesets KGS offers.
+                #
+                # Skipping the yield rather than returning keeps the truncation signal
+                # intact: the next iteration resumes the generator, whose own do_move
+                # raises IllegalMove, and the caller still records the partial game.
+                #
+                # is_legal() judges from the state's current player, so only trust it when
+                # that matches the mover; do_move swaps colours for a non-alternating
+                # record, which would make the answer meaningless.
+                if state.get_current_player() == player and not state.is_legal(move):
+                    continue
                 nn_input = self.feature_processor.state_to_tensor(state)
                 yield (nn_input, move)
 

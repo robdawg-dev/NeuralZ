@@ -8,6 +8,12 @@ from AlphaGo import go
 LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 REV_LETTERS = 'SRQPONMLKJIHGFEDCBA'
 
+# SGF properties that change the position, or whose turn it is, WITHOUT being a move.
+# Legal on any node, not just the root. Everything else that can appear on a moveless
+# node (C, N, markup such as CR/LB/MA/SL/SQ/TR/AR/LN/DD, position judgements DM/GB/GW/UC/V,
+# timing BL/WL/OB/OW, FG/PM/VW) is annotation with no board effect.
+_BOARD_ALTERING_PROPERTIES = frozenset(('AB', 'AW', 'AE', 'PL'))
+
 
 
 def flatten_idx(position, size):
@@ -120,6 +126,36 @@ def sgf_iter_states(sgf_string, include_end=True):
 			elif 'B' in props:
 				move = _parse_sgf_move(props['B'][0])
 				player = go.BLACK
+			else:
+				# A node carrying neither W nor B is not a move. Two very different
+				# cases hide here, and they must not be treated alike.
+				#
+				# Falling through used to reuse the PREVIOUS node's move/player and
+				# replay that move: an IllegalMove that truncated the game, or an
+				# UnboundLocalError that dropped the whole file when such a node came
+				# first. Measured at 0/60,136 KataGo selfplay training games but 89/90
+				# rating games, and live for KGS/GoGoD records.
+				board_altering = _BOARD_ALTERING_PROPERTIES.intersection(props)
+				if board_altering:
+					# AB/AW/AE/PL outside the root node change the position (or whose
+					# turn it is) without being a move. We cannot apply them, and
+					# skipping them would leave the board silently out of step with the
+					# record - every later move would then be replayed against a
+					# position that never occurred. That is the same desync that makes
+					# "skip the suicide and carry on" corrupting, so it gets the same
+					# treatment: stop here and let the caller keep the prefix.
+					# go.IllegalMove deliberately: every caller already catches it and
+					# responds by keeping the prefix and dropping the remainder, which
+					# is exactly the desired behaviour. A dedicated exception type
+					# belongs with the truncation-reason classification work.
+					raise go.IllegalMove(
+						"board-altering setup properties {} on a non-root node are not "
+						"supported; the board cannot be kept in sync with the record"
+						.format(sorted(board_altering)))
+				# Pure annotation (C, N, markup, timing, ...) - no board effect, safe to
+				# skip. This is 100% of the moveless nodes measured across every corpus
+				# to hand (81/81 in KataGo rating games are a terminal C[...result=...]).
+				continue
 			yield (gs, move, player)
 			# update state to n+1
 			gs.do_move(move, player)
