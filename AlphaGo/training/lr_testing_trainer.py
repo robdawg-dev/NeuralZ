@@ -2,20 +2,14 @@ import os
 import json
 import time
 import types
+import numpy as np
+from AlphaGo.training.xla_workarounds import ensure_xla_conv_nhwc
 
-# BEFORE `import tensorflow`, deliberately. The flag must be in the environment ahead of
-# the first XLA compilation, and importing TF first is exactly the ordering that was
-# observed to defeat it (the autotuner then fails on the first jit_compile=True step).
-# ensure_xla_conv_nhwc() warns if TF is already imported, so calling it after the import
-# below would also make that warning fire on every normal run and train everyone to
-# ignore it.
-from AlphaGo.training.xla_workarounds import ensure_xla_conv_nhwc  # noqa: E402
-
+# Must run before the first XLA compilation, i.e. before model.compile(jit_compile=True)
+# below is ever exercised - module level, ahead of everything else, is the safest place.
 ensure_xla_conv_nhwc()
 
-import numpy as np  # noqa: E402
-import tensorflow as tf  # noqa: E402,F401
-
+import tensorflow as tf  # noqa: E402
 from keras import mixed_precision, ops, utils as keras_utils  # noqa: E402
 from keras.metrics import TopKCategoricalAccuracy  # noqa: E402
 from keras.optimizers import SGD  # noqa: E402
@@ -105,7 +99,7 @@ class _ResumedLRSchedule(LearningRateSchedule):
 
 class WarmupCallback(Callback):
     """Linearly ramps the optimizer's learning rate from start_lr to target_lr over
-    warmup_steps, then stops touching it.
+    warmup_steps, then stops touching it (unless uncapped=True - see below).
 
     Only used for --lr-schedule plateau: ReduceLROnPlateau reduces the optimizer's
     learning_rate by direct assignment (new_lr = old_lr * factor), which requires it to
@@ -114,249 +108,29 @@ class WarmupCallback(Callback):
     warmup_steps/warmup_target), warmup has to happen here as a callback instead, before
     handing control of the (now plain) learning_rate over to ReduceLROnPlateau for the
     rest of the run.
+
+    uncapped=True (used by --uncapped-warmup, an LR-to-collapse diagnostic - see
+    run_training_v2's argparse help): skips the freeze entirely and keeps evaluating
+    the same linear formula forever. Algebraically this is identical to
+    lr(step) = start_lr + slope*step for step > warmup_steps too (slope =
+    (target_lr - start_lr) / warmup_steps) - it's the exact same line, just no longer
+    clamped to frac <= 1.0.
     """
 
-    def __init__(self, warmup_steps, start_lr, target_lr):
+    def __init__(self, warmup_steps, start_lr, target_lr, uncapped=False):
         super().__init__()
         self.warmup_steps = warmup_steps
         self.start_lr = start_lr
         self.target_lr = target_lr
+        self.uncapped = uncapped
         self._step = 0
 
     def on_train_batch_begin(self, batch, logs=None):
-        if self._step > self.warmup_steps:
+        if not self.uncapped and self._step > self.warmup_steps:
             return
         frac = self._step / max(1, self.warmup_steps)
         self.model.optimizer.learning_rate = self.start_lr + (self.target_lr - self.start_lr) * frac
         self._step += 1
-
-    @property
-    def is_done(self):
-        """True once warmup has stopped touching the learning_rate - lets other
-        epoch-boundary callbacks (LROverrideCallback) know it's safe to act without
-        fighting warmup's own per-batch ramp."""
-        return self._step > self.warmup_steps
-
-
-class LROverrideCallback(Callback):
-    """--lr-schedule plateau only: at each epoch boundary, check out_directory/
-    lr_override.txt for a manually-specified learning rate - if the file exists and its
-    value differs (beyond float-precision noise) from the optimizer's current
-    learning_rate, force the optimizer to that value instead.
-
-    Runs after ReduceLROnPlateau in the callback list, so an override always wins over
-    whatever the plateau logic just decided that epoch. The check re-runs every epoch,
-    so a standing file acts as a persistent pin (re-asserted for as long as it exists
-    and disagrees), not a one-shot nudge - lets an LR be changed live mid-run (e.g. for
-    a manual cut) without stopping the process, editing metadata.json, and resuming.
-
-    Never applies while warmup_cb (if any) is still actively ramping the learning_rate -
-    warmup owns it exclusively until done, the same way it already precedes
-    ReduceLROnPlateau itself. Only meaningful under --lr-schedule plateau, where the
-    optimizer's learning_rate is a plain mutable value; --lr-schedule cosine drives it
-    from a CosineDecay schedule object instead, which this doesn't attempt to override.
-    """
-
-    def __init__(self, out_directory, warmup_cb=None, verbose=False, tol=1e-6):
-        super().__init__()
-        self.override_path = os.path.join(out_directory, "lr_override.txt")
-        self.warmup_cb = warmup_cb
-        self.verbose = verbose
-        self.tol = tol
-
-    def on_epoch_end(self, epoch, logs=None):
-        if self.warmup_cb is not None and not self.warmup_cb.is_done:
-            return
-        if not os.path.exists(self.override_path):
-            return
-        with open(self.override_path) as f:
-            text = f.read().strip()
-        if not text:
-            return
-        try:
-            override_lr = float(text)
-        except ValueError:
-            # Always printed, not gated behind --verbose: a malformed override file is
-            # very likely a live typo the person editing it right now wants to know
-            # about immediately, not routine informational logging.
-            print("lr_override.txt: could not parse {!r} as a float, ignoring".format(text))
-            return
-        current_lr = float(self.model.optimizer.learning_rate)
-        if abs(override_lr - current_lr) > self.tol:
-            if self.verbose:
-                print("lr override file: {:.6g} -> {:.6g}".format(current_lr, override_lr))
-            self.model.optimizer.learning_rate = override_lr
-
-
-class OptimizerStateCallback(Callback):
-    """--lr-schedule plateau only: saves the optimizer's own variables (SGD momentum,
-    and under --mixed-precision the wrapping LossScaleOptimizer's own dynamic
-    loss-scale state) to a single rolling file every epoch, so a later --weights resume
-    can restore momentum instead of starting it at 0. That reset has been a real,
-    repeated source of trouble in this project - an un-cushioned LR jump onto a
-    momentum-less optimizer diverged to nan the first time a manual LR cut was tried
-    via resume, and even a cushioned (warmup-ramped) resume afterward still showed
-    several epochs of visibly disrupted training loss/entropy before settling. The
-    underlying cause isn't specific to a deliberate LR change, either - ANY --weights
-    resume loses momentum today, including one forced by a plain interruption (power
-    loss, needing the GPU for something else) with no LR change at all.
-
-    Overwrites the same file every epoch (out_directory/optimizer_state.npz) rather
-    than keeping one per epoch like weights.NNNNN.weights.h5 does - unlike model
-    weights, nothing in this project has ever resumed from anything but the most
-    recent checkpoint, and SGD-with-momentum's state is roughly the same size as the
-    model's own weights, so keeping historical copies would roughly double checkpoint
-    storage for no benefit anything here actually uses.
-    """
-
-    def __init__(self, out_directory):
-        super().__init__()
-        self.path = os.path.join(out_directory, "optimizer_state.npz")
-
-    def on_epoch_end(self, epoch, logs=None):
-        store = {}
-        self.model.optimizer.save_own_variables(store)
-        np.savez(self.path, **store)
-
-
-class RangeTestLRCallback(Callback):
-    """--lr-range-test only: gentle linear warmup up to a conservative floor, then an
-    EXPONENTIAL sweep from that floor to a ceiling over the rest of the run.
-
-    The warmup phase exists because the model's raw gradient magnitude at
-    initialization is very large on real data (observed ~100K at step 0 in an earlier
-    ramp test on this project's data/architecture) - hitting a real candidate LR
-    immediately, before that settles, conflates "unstable at this LR" with "unstable
-    because weights are still fresh". Warming up to a floor low enough that it
-    obviously isn't itself the target LR gives the optimizer a chance to leave that
-    initial regime before the sweep starts probing.
-
-    The sweep itself is exponential rather than linear so it gets even resolution per
-    decade on a log-LR axis (the standard shape for this kind of test - Smith,
-    "Cyclical Learning Rates for Training Neural Networks"). This is a coarse
-    localizer only, not a verdict: a ramp's apparent tolerance for a given LR is not
-    the same as genuine stability at that LR held constant (confirmed on this exact
-    project - a prior linear ramp climbed to LR=0.8 with no visible break, while later
-    held-constant tests failed well below that) - candidate LRs from this sweep must
-    still be verified by a separate held-constant run before being trusted.
-    """
-
-    def __init__(self, warmup_steps, warmup_start_lr, floor_lr, ceiling_lr, total_steps):
-        super().__init__()
-        self.warmup_steps = warmup_steps
-        self.warmup_start_lr = warmup_start_lr
-        self.floor_lr = floor_lr
-        self.ceiling_lr = ceiling_lr
-        self.sweep_steps = max(1, total_steps - warmup_steps)
-        self._step = 0
-
-    def on_train_batch_begin(self, batch, logs=None):
-        if self._step <= self.warmup_steps:
-            frac = self._step / max(1, self.warmup_steps)
-            lr = self.warmup_start_lr + (self.floor_lr - self.warmup_start_lr) * frac
-        else:
-            frac = min(1.0, (self._step - self.warmup_steps) / self.sweep_steps)
-            lr = self.floor_lr * (self.ceiling_lr / self.floor_lr) ** frac
-        self.model.optimizer.learning_rate = lr
-        self._step += 1
-
-
-class RangeTestDiagnosticsCallback(Callback):
-    """--lr-range-test only: step-granularity visibility into the sweep.
-
-    Logs step/lr/loss/weight_norm/grad_norm/loss_scale to <out_directory>/
-    step_diagnostics.jsonl every check_every steps. Deliberately has NO automatic
-    stop-on-weight_norm-ratio (an earlier version of this diagnostic, in
-    lr_testing_trainer.py, stopped training once weight_norm exceeded a fixed
-    multiple of its starting value) - that heuristic produced misleading verdicts in
-    this project's past LR investigations (weight_norm grew smoothly through LRs that
-    later turned out to be well past the real stability boundary, and looked alarming
-    at LRs that turned out fine). This callback only records; judging the sweep is a
-    manual/offline read of the full curve afterward, primarily via the loss trend, not
-    a live threshold. TerminateOnNaN (added alongside this callback where it's used)
-    is the only automatic stop, as a backstop against a genuine runaway wasting the
-    rest of the sweep's step budget.
-
-    grad_norm/loss_scale are read from logs["grad_norm"]/logs["loss_scale"], only
-    present when the model's train_step has been monkey-patched (see
-    _grad_norm_and_loss_scale_train_step) - the logs.get(...) guards keep this
-    callback harmless if that patch isn't present.
-    """
-
-    def __init__(self, check_every, out_path):
-        super().__init__()
-        self.check_every = check_every
-        self._step = 0
-        self._f = open(out_path, "w")
-
-    def on_train_batch_end(self, batch, logs=None):
-        if self._step % self.check_every == 0:
-            weight_norm = float(tf.linalg.global_norm(self.model.trainable_variables))
-            lr = float(self.model.optimizer.learning_rate)
-            loss = float(logs.get("loss")) if logs and "loss" in logs else None
-            grad_norm = logs.get("grad_norm") if logs else None
-            grad_norm = float(grad_norm) if grad_norm is not None else None
-            loss_scale = logs.get("loss_scale") if logs else None
-            loss_scale = float(loss_scale) if loss_scale is not None else None
-            record = {"step": self._step, "lr": lr, "loss": loss,
-                     "weight_norm": weight_norm, "grad_norm": grad_norm,
-                     "loss_scale": loss_scale}
-            self._f.write(json.dumps(record) + "\n")
-            self._f.flush()
-        self._step += 1
-
-    def on_train_end(self, logs=None):
-        self._f.close()
-
-
-def _grad_norm_and_loss_scale_train_step(self, data):
-    """--lr-range-test only: replaces model.train_step so grad_norm and (under mixed
-    precision) the optimizer's current dynamic loss scale reach RangeTestDiagnosticsCallback
-    via logs["grad_norm"]/logs["loss_scale"] every step - model.fit() doesn't expose either
-    to callbacks otherwise.
-
-    Mirrors Model.train_step (keras/src/models/model.py): under mixed_float16, gradients
-    must be computed w.r.t. the SCALED loss (keeps small gradient values representable
-    through the fp16 backward pass; apply_gradients then unscales internally before
-    actually updating weights) - computing them against the raw loss instead would starve
-    the effective step size, since apply_gradients always assumes its input was
-    pre-scaled.
-
-    loss_scale: under --mixed-precision, model.compile() wraps the optimizer in
-    keras.src.optimizers.loss_scale_optimizer.LossScaleOptimizer, whose current dynamic
-    scale isn't a plain attribute - it's one of the optimizer's own tracked variables
-    (named "dynamic_scale", created lazily on the optimizer's first apply_gradients
-    call - i.e. by the line below, on this very first traced step). It halves
-    automatically whenever an inf/nan gradient triggers a skipped step, then grows back
-    over time - logging it directly lets an occasional Infinity grad_norm reading during
-    a sweep be told apart from genuine instability (a self-correcting mixed-precision
-    artifact vs a real blowup) instead of guessed at. Looked up AFTER apply_gradients
-    (not before) so the lookup - itself plain Python running once at trace time, not
-    per-call - finds the variable already built; under plain float32 (no mixed
-    precision) the optimizer has no such variable and loss_scale is left out of results
-    entirely.
-    """
-    x, y = data
-    with tf.GradientTape() as tape:
-        y_pred = self(x, training=True)
-        loss = self.compute_loss(y=y, y_pred=y_pred)
-        scaled_loss = self.optimizer.scale_loss(loss) if self.optimizer is not None else loss
-    trainable_vars = self.trainable_variables
-    gradients = tape.gradient(scaled_loss, trainable_vars)
-    grad_norm = tf.linalg.global_norm(gradients)
-    self.optimizer.apply_gradients(zip(gradients, trainable_vars))
-    for metric in self.metrics:
-        if metric.name == "loss":
-            metric.update_state(loss)
-        else:
-            metric.update_state(y, y_pred)
-    results = {m.name: m.result() for m in self.metrics}
-    results["grad_norm"] = grad_norm
-    for v in self.optimizer.variables:
-        if v.name == "dynamic_scale":
-            results["loss_scale"] = tf.convert_to_tensor(v)
-            break
-    return results
 
 
 def _replay_plateau_state(epoch_logs, factor, patience, cooldown, min_lr, min_delta=1e-4):
@@ -459,6 +233,135 @@ class TrainingDiagnosticsCallback(Callback):
         logs["steps_per_second"] = self.steps_per_epoch / elapsed if elapsed > 0 else 0.0
 
 
+class StepDiagnosticsCallback(Callback):
+    """--uncapped-warmup only: step-granularity weight_norm/grad_norm visibility.
+
+    A real production epoch here is ~2,700+ steps (~10-12 minutes) - logging
+    weight_norm/grad_norm only at on_epoch_end could miss a collapse's actual onset
+    entirely (all that would be seen is the aftermath, up to ~10 minutes late). This
+    instead checks every check_every steps, writing each checked point to its own
+    JSONL file (kept separate from metadata.json's one-record-per-epoch convention,
+    so nothing else that reads metadata.json is affected) and stopping training the
+    moment weight_norm exceeds divergence_norm_multiple times its value at the first
+    checked step - catching the *onset* of a blowup, not just its eventual NaN
+    (TerminateOnNaN, added alongside this callback, is the backstop for that).
+
+    grad_norm is read from logs["grad_norm"], only present when run_training_v2 has
+    monkey-patched the model's train_step to return it there (see --uncapped-warmup
+    and _grad_norm_train_step) - the logs.get(...) guard keeps this callback
+    harmless/reusable if that patch isn't present.
+    """
+
+    def __init__(self, check_every, out_path, divergence_norm_multiple=5.0):
+        super().__init__()
+        self.check_every = check_every
+        self.out_path = out_path
+        self.divergence_norm_multiple = divergence_norm_multiple
+        self._step = 0
+        self._start_weight_norm = None
+        self._f = open(out_path, "w")
+
+    def on_epoch_begin(self, epoch, logs=None):
+        self._epoch_max_grad_norm = 0.0
+        self._epoch_last_weight_norm = None
+
+    def on_train_batch_end(self, batch, logs=None):
+        # By the time logs reaches a callback, Keras has already converted train_step's
+        # whole returned dict (including "grad_norm" - see _grad_norm_train_step) from
+        # tensors to concrete Python values, so this is already a plain float here.
+        grad_norm = logs.get("grad_norm") if logs else None
+        if grad_norm is not None:
+            self._epoch_max_grad_norm = max(self._epoch_max_grad_norm, grad_norm)
+        if self._step % self.check_every == 0:
+            weight_norm = float(tf.linalg.global_norm(self.model.trainable_variables))
+            self._epoch_last_weight_norm = weight_norm
+            if self._start_weight_norm is None:
+                self._start_weight_norm = weight_norm
+            lr = float(self.model.optimizer.learning_rate)
+            loss = float(logs.get("loss")) if logs and "loss" in logs else None
+            record = {"step": self._step, "lr": lr, "loss": loss,
+                     "weight_norm": weight_norm, "grad_norm": grad_norm}
+            self._f.write(json.dumps(record) + "\n")
+            self._f.flush()
+            if weight_norm > self._start_weight_norm * self.divergence_norm_multiple:
+                print("*** weight_norm {:.2f} exceeds {}x starting norm {:.2f} at step "
+                     "{} (lr={:.5g}) - stopping early ***".format(
+                         weight_norm, self.divergence_norm_multiple,
+                         self._start_weight_norm, self._step, lr), flush=True)
+                self.model.stop_training = True
+        self._step += 1
+
+    def on_epoch_end(self, epoch, logs=None):
+        if logs is not None:
+            logs["grad_norm_max"] = self._epoch_max_grad_norm
+            logs["weight_norm"] = self._epoch_last_weight_norm
+
+    def on_train_end(self, logs=None):
+        self._f.close()
+
+
+def _grad_norm_train_step(self, data):
+    """--uncapped-warmup only: replaces model.train_step so grad_norm is available to
+    StepDiagnosticsCallback via logs["grad_norm"] every step.
+
+    model.fit() doesn't expose per-step gradients to callbacks - getting real
+    grad_norm needs a custom train_step. Monkey-patched onto the already-built model
+    instance (a plain bound-method reassignment) rather than threaded through as a
+    model_class kwarg, since the model here is loaded via CNNPolicy.load_model()
+    (AlphaGo/models/nn_util.py), which reconstructs the architecture from a saved
+    Keras JSON config - not by re-invoking ResTowerPolicy.create_network() - so a
+    model_class kwarg wouldn't be reachable from this trainer's normal load path.
+
+    grad_norm is returned in the same dict as every other metric rather than stashed
+    on self as a plain attribute - a first attempt at the latter failed
+    (TypeError: float() argument must be a string or a real number, not
+    'SymbolicTensor') because with jit_compile=True this method is traced once as a
+    graph function: a raw `self._x = tensor` assignment only actually executes during
+    that initial trace, so self._x stays bound to the trace-time symbolic tensor
+    forever after, never updated on later concrete calls. Returning grad_norm in this
+    function's own result dict works because Keras's fit() loop already converts
+    that whole dict from tensors to concrete Python values before handing it to
+    callbacks as `logs` - the exact same mechanism that already makes plain metrics
+    like loss/accuracy safely readable in callbacks, reused here rather than
+    reinvented. Deliberately NOT wrapped in a keras.metrics.Mean (which would report a
+    running average since epoch start, diluting exactly the kind of brief spike this
+    diagnostic exists to catch) - this is the raw, instantaneous per-step value.
+
+    Reproduces the same loss/metrics computation as this file's own model.compile()
+    call (loss='categorical_crossentropy', metrics=[accuracy, top5_accuracy,
+    prediction_entropy]) so logged numbers stay comparable to every other run's
+    metadata.json.
+    """
+    x, y = data
+    with tf.GradientTape() as tape:
+        y_pred = self(x, training=True)
+        loss = self.compute_loss(y=y, y_pred=y_pred)
+        # Mirrors Model.train_step exactly (keras/src/models/model.py) - under
+        # mixed_float16, gradients must be computed w.r.t. the SCALED loss (keeps
+        # small gradient values representable through the fp16 backward pass;
+        # apply_gradients then unscales them back down internally before actually
+        # updating weights). A first version of this monkey-patch skipped this call
+        # entirely - grad_norm still looked plausible (computed directly from the raw
+        # tape output before any scaling), but weight_norm barely moved and loss
+        # stayed pinned near the random-baseline ceiling for 7000+ steps: unscaled
+        # gradients both lost precision in the fp16 backward pass AND then got
+        # divided by the loss-scale factor a second time by apply_gradients (which
+        # always assumes its input was pre-scaled), crushing the effective step size.
+        scaled_loss = self.optimizer.scale_loss(loss) if self.optimizer is not None else loss
+    trainable_vars = self.trainable_variables
+    gradients = tape.gradient(scaled_loss, trainable_vars)
+    grad_norm = tf.linalg.global_norm(gradients)
+    self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+    for metric in self.metrics:
+        if metric.name == "loss":
+            metric.update_state(loss)
+        else:
+            metric.update_state(y, y_pred)
+    results = {m.name: m.result() for m in self.metrics}
+    results["grad_norm"] = grad_norm
+    return results
+
+
 class MetadataWriterCallback(Callback):
 
     def __init__(self, path):
@@ -531,7 +434,6 @@ def run_training_v2(cmd_line_args=None):
     parser.add_argument("--plateau-patience", type=int, default=5, help="--lr-schedule plateau only: epochs with no val_loss improvement before cutting the learning rate. Default: 5. Counts in *epochs* as shaped by --epoch-length, not real dataset passes - a small --epoch-length reacts faster in wall-clock terms but each epoch's val_loss reading is noisier (fewer steps backing it), so pick patience relative to whatever --epoch-length this run actually uses.")  # noqa: E501
     parser.add_argument("--plateau-cooldown", type=int, default=2, help="--lr-schedule plateau only: epochs to wait after a cut before monitoring for a new plateau again, so each cut gets a fair chance to show its effect before another one can fire. Default: 2 (Keras's own default is 0, which allows immediate back-to-back cuts).")  # noqa: E501
     parser.add_argument("--plateau-min-lr", type=float, default=0.0, help="--lr-schedule plateau only: floor - the learning rate is never cut below this. Default: 0.0 (matches Keras's own default, i.e. no floor) - set this explicitly (e.g. some fraction of --learning-rate) to keep training from grinding to a near-zero LR the way cosine's default alpha=0 does.")  # noqa: E501
-    parser.add_argument("--plateau-min-delta", type=float, default=0.005, help="--lr-schedule plateau only: minimum val_loss improvement to count as 'still improving' and reset --plateau-patience's wait counter. Default: 0.005 - NOT Keras's own default of 1e-4, which measured 30-50x smaller than this project's real epoch-to-epoch val_loss noise (stdev ~0.0048-0.0162 across the b15c192 mb1024 lr1p6 run's two LR phases). At 1e-4, noise alone registers a 'new best' often enough that the patience counter rarely reaches --plateau-patience even during a genuine multi-epoch plateau - that run needed a manual LR cut at epoch 36 and ground for 39 more epochs (avg 0.0014/epoch) before the next one. 0.005 sits just above the quieter (lower-LR) phase's noise floor and comfortably below real early-training gains, so it filters noise-driven bests without masking genuine progress.")  # noqa: E501
     parser.add_argument("--buffer-size", help="Number of positions held in the shuffle buffer at once. Default: 400000 (~7GB at 19x19x48 planes)", type=int, default=400000)  # noqa: E501
     parser.add_argument("--verbose", "-v", help="Turn on verbose mode", default=False, action="store_true")  # noqa: E501
     # slightly fancier args
@@ -540,57 +442,11 @@ def run_training_v2(cmd_line_args=None):
     parser.add_argument("--train-val-test", help="Fraction of games to use for training/val/test. Must sum to 1. Only used the first time (see game_split.json in out_directory)", nargs=3, type=float, default=[0.93, .05, .02])  # noqa: E501
     parser.add_argument("--symmetries", help="Comma-separated list of transforms, subset of noop,rot90,rot180,rot270,fliplr,flipud,diag1,diag2", default='noop,rot90,rot180,rot270,fliplr,flipud,diag1,diag2')  # noqa: E501
     parser.add_argument("--seed", help="Seed for the shuffle buffer's game order, buffer sampling, and symmetry choice (both train and val, offset by 1 from each other since they read disjoint game pools). Default: unseeded (a fresh, unrecoverable draw from OS entropy every run) - set this to make the exact position stream fed to the network reproducible, e.g. to replay a run that hit an anomaly.", type=int, default=None)  # noqa: E501
-    parser.add_argument("--val-dataset-gpu-resident", action="store_true",
-                        help="Diagnostic-only escape hatch: build val_dataset WITHOUT the "
-                             "CPU-pin fix, letting TF's default placement put it on GPU "
-                             "again - reproduces the original ResourceExhaustedError risk. "
-                             "Exists solely to A/B the CPU-pin fix's effect on training-time "
-                             "GPU utilization against an otherwise-identical run (same "
-                             "buffer_size, same batch size, same prefetch) - never use this "
-                             "for a real training run.")
-    # LR range test - a coarse, cheap localizer for a new architecture/batch-size
-    # combination's viable LR region, meant to be followed by separate held-constant
-    # verification runs (this mode only ramps, it never holds). Off by default, does not
-    # affect normal training runs. Bypasses --lr-schedule/--learning-rate/--warmup-steps/
-    # --warmup-start-lr entirely.
-    parser.add_argument("--lr-range-test", action="store_true",
-                        help="Diagnostic mode: ramp the LR through a gentle linear warmup "
-                             "(--range-warmup-start-lr -> --range-floor-lr over "
-                             "--range-warmup-steps) and then an EXPONENTIAL sweep from "
-                             "--range-floor-lr up to --range-ceiling-lr over the rest of the "
-                             "run (shaped by --epochs/--epoch-length as usual). Ignores "
-                             "--lr-schedule/--learning-rate/--warmup-steps/--warmup-start-lr "
-                             "entirely - not compatible with --weights (resume). Logs "
-                             "step/lr/loss/weight_norm/grad_norm/loss_scale to "
-                             "<out_directory>/step_diagnostics.jsonl every "
-                             "--range-check-every steps, and adds TerminateOnNaN as a "
-                             "safety net. This is a coarse localizer only, NOT a verdict on "
-                             "a safe LR - ramping tolerance is not the same as genuine "
-                             "stability at a held LR, so treat its output as candidates for "
-                             "a follow-up held-constant test, not an answer. Default: False "
-                             "(normal training).")
-    parser.add_argument("--range-warmup-steps", type=int, default=None,
-                        help="--lr-range-test only: steps to linearly ramp from "
-                             "--range-warmup-start-lr to --range-floor-lr before the "
-                             "exponential sweep begins. Default: one epoch's worth of steps "
-                             "(steps_per_epoch, from --epoch-length/--minibatch) - a minimum "
-                             "gentle warmup so the sweep doesn't start while the model's "
-                             "initial (very large) raw gradient magnitude is still settling.")
-    parser.add_argument("--range-warmup-start-lr", type=float, default=1e-4,
-                        help="--lr-range-test only: LR at step 0. Default: .0001")
-    parser.add_argument("--range-floor-lr", type=float, default=1e-3,
-                        help="--lr-range-test only: LR reached at the end of warmup, and the "
-                             "starting point of the exponential sweep. Should be low enough "
-                             "that it obviously isn't itself the target LR. Default: .001")
-    parser.add_argument("--range-ceiling-lr", type=float, default=2.0,
-                        help="--lr-range-test only: LR reached at the end of the run (the "
-                             "last step of the last epoch). The exponential sweep moves from "
-                             "--range-floor-lr to this value over the steps remaining after "
-                             "warmup. Default: 2.0")
-    parser.add_argument("--range-check-every", type=int, default=50,
-                        help="--lr-range-test only: log step/lr/loss/weight_norm/grad_norm/"
-                             "loss_scale to <out_directory>/step_diagnostics.jsonl every this "
-                             "many steps. Default: 50")
+    # LR-to-collapse diagnostic (see LR_COLLAPSE_TEST_PLAN.md) - off by default, does
+    # not affect normal training runs.
+    parser.add_argument("--uncapped-warmup", help="Diagnostic mode: never cap/freeze WarmupCallback's linear ramp - let it keep climbing at the same slope indefinitely instead of leveling off at --learning-rate, until TerminateOnNaN or the weight_norm-multiple check (see --check-every) stops it, or --epochs runs out. Requires --lr-schedule plateau (that's the branch WarmupCallback lives in). Adds keras.callbacks.TerminateOnNaN, skips ReduceLROnPlateau entirely (no re-hold/re-cut should compete with the uncapped ramp), and enables step-granularity weight_norm/grad_norm logging (StepDiagnosticsCallback) via a monkey-patched train_step. Default: False (normal capped warmup).", default=False, action="store_true")  # noqa: E501
+    parser.add_argument("--check-every", help="--uncapped-warmup only: log weight_norm/grad_norm/loss/lr to <out_directory>/step_diagnostics.jsonl every this many steps, and check for divergence (weight_norm exceeding --divergence-norm-multiple times its value at the first checked step) at the same cadence. Default: 50 (matches the cadence the now-superseded benchmarks/_lr_collapse_test.py already validated as cheap).", type=int, default=50)  # noqa: E501
+    parser.add_argument("--divergence-norm-multiple", help="--uncapped-warmup only: treat weight_norm as diverged (and stop training) once it exceeds this many times its value at the first --check-every checkpoint. Default: 5.0", type=float, default=5.0)  # noqa: E501
 
     if cmd_line_args is None:
         args = parser.parse_args()
@@ -599,18 +455,11 @@ def run_training_v2(cmd_line_args=None):
 
     resume = args.weights is not None
 
-    # --lr-range-test + --weights is a supported combination (unlike plateau/cosine's
-    # --weights resume, which continues one specific schedule's own step accounting):
-    # RangeTestLRCallback's step counter always starts fresh at 0 regardless of resume,
-    # so this just warm-starts a NEW, independent sweep from a checkpoint's weights
-    # (e.g. continuing an earlier sweep's LR curve from where it left off, without
-    # re-running the cheap-to-skip low end of the range again) - not an attempt to
-    # resume the SAME sweep mid-step-count, which would need offset-aware accounting
-    # this callback doesn't have. The optimizer's own state (SGD momentum) is not
-    # reloaded either way (--weights only ever reloads model weights - see the
-    # epochs_already_trained handling below), so a warm-started sweep has a brief
-    # (~10-50 step, matching momentum's 1/(1-momentum) memory) transient while momentum
-    # rebuilds, rather than being a bit-for-bit continuation of the original run.
+    if args.uncapped_warmup and args.lr_schedule != "plateau":
+        raise ValueError(
+            "--uncapped-warmup requires --lr-schedule plateau (that's the branch "
+            "WarmupCallback lives in - --lr-schedule cosine folds warmup into "
+            "CosineDecay instead, which has no uncapped option).")
 
     if args.verbose:
         if resume:
@@ -671,16 +520,9 @@ def run_training_v2(cmd_line_args=None):
         os.makedirs(args.out_directory)
 
     # Game-level train/val/test split, persisted so a resumed run uses the exact same
-    # split rather than a freshly (and differently) drawn one. Passing args.seed here
-    # (not just leaving it to shuffle_buffer_batch_generator below) makes a FRESH
-    # out_directory's split reproducible too - without this, --seed only ever
-    # controlled position ordering within whatever split happened to get drawn, not
-    # which games ended up in train/val/test, so two separate out_directories with the
-    # same --seed still trained on different data (confirmed: only ~93% train-set
-    # overlap between two such runs).
+    # split rather than a freshly (and differently) drawn one.
     train_games, val_games, test_games = get_or_create_game_split(
-        games, args.out_directory, args.train_val_test, verbose=args.verbose,
-        seed=args.seed)
+        games, args.out_directory, args.train_val_test, verbose=args.verbose)
 
     n_train_data = sum(g["length"] for g in train_games)
     n_val_data = sum(g["length"] for g in val_games)
@@ -796,38 +638,7 @@ def run_training_v2(cmd_line_args=None):
     X_val, Y_val = build_validation_arrays(
         val_games_for_eval, board_size, n_features, symmetries, seed=val_seed)
 
-    # tf.data.Dataset.from_tensor_slices() embeds the whole array as an in-graph
-    # constant, and under TF2 eager execution with a GPU visible, TF's default device
-    # placement puts that constant on the GPU immediately at construction time - not
-    # lazily streamed per-batch like the training shuffle-buffer generator is. At
-    # validation_length=100000 that's an extra ~6.93GB permanently resident in VRAM
-    # (confirmed via benchmarks/_val_dataset_gpu_placement_test.py: GPU memory jumped
-    # from ~0GB to ~7GB the instant this line ran, before any iteration), which was
-    # enough on its own to push a minibatch=1024 run into a GPU ResourceExhaustedError
-    # that leaner minibatch=1024 diagnostics (which never build a validation_data set at
-    # all) never caught. Pinning construction to CPU keeps X_val/Y_val host-resident and
-    # streams one batch at a time onto the GPU, same as training data already does.
-    if args.val_dataset_gpu_resident:
-        # Diagnostic escape hatch only - see --val-dataset-gpu-resident's help text. Not
-        # the default: this is exactly the placement that caused the original GPU
-        # ResourceExhaustedError this whole CPU-pin fix exists to prevent.
-        val_dataset = tf.data.Dataset.from_tensor_slices((X_val, Y_val)).batch(args.minibatch)
-    else:
-        with tf.device('/cpu:0'):
-            val_dataset = tf.data.Dataset.from_tensor_slices((X_val, Y_val)).batch(args.minibatch)
-    # from_tensor_slices() makes its own internal copy of the array into the dataset
-    # regardless of device placement - the CPU pinning above only controls where THAT
-    # copy lives, it doesn't stop X_val/Y_val (the original numpy arrays) from also
-    # still being held in memory afterward. Confirmed via a real end-to-end run: with
-    # both copies alive at once (~6.93GB each at validation_length=100000) on top of the
-    # persistent ~6.8GB training shuffle buffer, host RAM hit the WSL2 cap and the
-    # kernel OOM-killed the process (dmesg: "Out of memory: Killed process ... python3",
-    # anon-rss ~17.76GB at kill time) - even though GPU memory never moved. Dropping the
-    # now-redundant references lets the original arrays be reclaimed once val_dataset
-    # has its own copy.
-    del X_val, Y_val
-    import gc
-    gc.collect()
+    val_dataset = tf.data.Dataset.from_tensor_slices((X_val, Y_val)).batch(args.minibatch)
 
     # Computed here (before building the LR schedule) rather than after model.compile():
     # CosineDecay needs the total step budget up front to shape its decay curve.
@@ -838,29 +649,7 @@ def run_training_v2(cmd_line_args=None):
     warmup_cb = None
     plateau_cb = None
     plateau_state_restorer = None
-    range_lr_cb = None
-    lr_override_cb = None
-    optimizer_state_cb = None
-    if args.lr_range_test:
-        # No LearningRateSchedule object and no ReduceLROnPlateau - RangeTestLRCallback
-        # owns the optimizer's learning_rate directly for the whole run, the same way
-        # WarmupCallback does for --lr-schedule plateau (see there for why a callback,
-        # not a schedule, is needed for a plain mutable LR).
-        lr_schedule = None
-        sgd = SGD(learning_rate=args.range_warmup_start_lr, momentum=args.momentum,
-                  nesterov=True)
-        range_warmup_steps = (args.range_warmup_steps if args.range_warmup_steps is not None
-                              else steps_per_epoch)
-        range_lr_cb = RangeTestLRCallback(
-            range_warmup_steps, args.range_warmup_start_lr, args.range_floor_lr,
-            args.range_ceiling_lr, total_steps)
-        if args.verbose:
-            print("LR range test: warmup {} -> {} over {} steps, then exponential sweep "
-                 "{} -> {} over the remaining {} steps".format(
-                     args.range_warmup_start_lr, args.range_floor_lr, range_warmup_steps,
-                     args.range_floor_lr, args.range_ceiling_lr,
-                     max(1, total_steps - range_warmup_steps)))
-    elif args.lr_schedule == "cosine":
+    if args.lr_schedule == "cosine":
         # Warmup (linear, warmup_start_lr -> learning_rate over warmup_steps) then cosine
         # decay to zero over the rest of total_steps, replacing InverseTimeDecay's
         # lr/(1+decay*step) - InverseTimeDecay's decay_rate was tuned for a step count this
@@ -897,39 +686,30 @@ def run_training_v2(cmd_line_args=None):
         # forgetting its own best/wait/cooldown bookkeeping too - see
         # _replay_plateau_state). Fix: read the last completed epoch's logged
         # learning_rate (TrainingDiagnosticsCallback already writes this every epoch) and
-        # start the optimizer there instead, skipping warmup entirely on a resume (it only
-        # makes sense for a genuinely fresh start), and replay history into
-        # ReduceLROnPlateau's own best/wait/cooldown_counter - best doesn't reset on
-        # on_train_begin (only wait/cooldown do), but all three are set explicitly here for
-        # clarity.
-        #
-        # (A --resume-warmup-steps option - ramping into the resumed LR instead of jumping
-        # straight to it - was tried and removed again: it avoided the instant-jump nan
-        # divergence, but the resumed run still spent several epochs with visibly disrupted
-        # training loss/entropy before settling, which wasn't judged worth keeping over the
-        # simpler instant-jump behavior.)
+        # start the optimizer there instead, skip warmup entirely (it only makes sense
+        # for a genuinely fresh start), and replay history into ReduceLROnPlateau's own
+        # best/wait/cooldown_counter - best doesn't reset on on_train_begin (only
+        # wait/cooldown do), but all three are set explicitly here for clarity.
         if resume and meta_writer.metadata["epochs"]:
-            resumed_target_lr = meta_writer.metadata["epochs"][-1]["learning_rate"]
-            initial_lr = resumed_target_lr
+            initial_lr = meta_writer.metadata["epochs"][-1]["learning_rate"]
             resumed_best, resumed_wait, resumed_cooldown = _replay_plateau_state(
                 meta_writer.metadata["epochs"], args.plateau_factor, args.plateau_patience,
-                args.plateau_cooldown, args.plateau_min_lr, min_delta=args.plateau_min_delta)
+                args.plateau_cooldown, args.plateau_min_lr)
         else:
-            resumed_target_lr = None
             initial_lr = args.warmup_start_lr
             resumed_best, resumed_wait, resumed_cooldown = None, 0, 0
         lr_schedule = None
         sgd = SGD(learning_rate=initial_lr, momentum=args.momentum, nesterov=True)
         if not resume:
-            warmup_cb = WarmupCallback(args.warmup_steps, args.warmup_start_lr, args.learning_rate)
-        plateau_cb = ReduceLROnPlateau(
-            monitor="val_loss", factor=args.plateau_factor, patience=args.plateau_patience,
-            cooldown=args.plateau_cooldown, min_lr=args.plateau_min_lr,
-            min_delta=args.plateau_min_delta, verbose=1)
-        lr_override_cb = LROverrideCallback(
-            args.out_directory, warmup_cb=warmup_cb, verbose=args.verbose)
-        optimizer_state_cb = OptimizerStateCallback(args.out_directory)
-        if resumed_best is not None:
+            warmup_cb = WarmupCallback(args.warmup_steps, args.warmup_start_lr, args.learning_rate,
+                                       uncapped=args.uncapped_warmup)
+        # --uncapped-warmup: no re-hold/re-cut behavior should compete with the
+        # uncapped ramp, so ReduceLROnPlateau is skipped entirely in this mode.
+        if not args.uncapped_warmup:
+            plateau_cb = ReduceLROnPlateau(
+                monitor="val_loss", factor=args.plateau_factor, patience=args.plateau_patience,
+                cooldown=args.plateau_cooldown, min_lr=args.plateau_min_lr, verbose=1)
+        if resumed_best is not None and plateau_cb is not None:
             plateau_cb.best = resumed_best
             # wait/cooldown_counter can't just be set here - ReduceLROnPlateau's own
             # on_train_begin() would reset them to 0 the moment model.fit() starts (it
@@ -951,39 +731,16 @@ def run_training_v2(cmd_line_args=None):
                  prediction_entropy],
         jit_compile=True)
 
-    # Restore optimizer state (SGD momentum, plus the LossScaleOptimizer's own dynamic
-    # loss-scale state under --mixed-precision - see OptimizerStateCallback) saved by a
-    # prior run, if present. Must happen after compile() (the optimizer isn't attached,
-    # and under mixed precision isn't wrapped, until then) and needs an explicit build()
-    # first: optimizer variables are created lazily on the first apply_gradients() call,
-    # so load_own_variables() has nothing to load into otherwise.
-    #
-    # DO NOT remove/reorder the build() call below - confirmed via
-    # benchmarks/_optimizer_state_roundtrip_test.py that calling load_own_variables()
-    # on an unbuilt optimizer does NOT raise: it silently no-ops (a UserWarning about a
-    # variable-count mismatch, easy to miss without --verbose) and leaves momentum at 0,
-    # i.e. exactly the failure mode this whole feature exists to prevent, just silent
-    # instead of loud.
-    if args.lr_schedule == "plateau" and resume:
-        optimizer_state_path = os.path.join(args.out_directory, "optimizer_state.npz")
-        if os.path.exists(optimizer_state_path):
-            model.optimizer.build(model.trainable_variables)
-            with np.load(optimizer_state_path) as f:
-                model.optimizer.load_own_variables(dict(f))
-            if args.verbose:
-                print("restored optimizer state (momentum) from {}".format(optimizer_state_path))
-        elif args.verbose:
-            print("no optimizer_state.npz found - resuming with momentum reset to 0")
-
-    range_diagnostics = None
-    if args.lr_range_test:
+    step_diagnostics = None
+    if args.uncapped_warmup:
         # Monkey-patch AFTER compile() (so the patched step still picks up
         # jit_compile=True via make_train_function()) and BEFORE fit() - see
-        # _grad_norm_and_loss_scale_train_step's docstring for why this is a
-        # monkey-patch rather than a model_class kwarg.
-        model.train_step = types.MethodType(_grad_norm_and_loss_scale_train_step, model)
-        range_diagnostics = RangeTestDiagnosticsCallback(
-            args.range_check_every, os.path.join(args.out_directory, "step_diagnostics.jsonl"))
+        # _grad_norm_train_step's docstring for why this is a monkey-patch rather
+        # than a model_class kwarg.
+        model.train_step = types.MethodType(_grad_norm_train_step, model)
+        step_diagnostics = StepDiagnosticsCallback(
+            args.check_every, os.path.join(args.out_directory, "step_diagnostics.jsonl"),
+            divergence_norm_multiple=args.divergence_norm_multiple)
 
     diagnostics = TrainingDiagnosticsCallback(lr_schedule, steps_per_epoch)
 
@@ -998,27 +755,18 @@ def run_training_v2(cmd_line_args=None):
     # run before meta_writer, which just persists whatever's in logs by the time it sees it.
     # plateau_state_restorer must run after plateau_cb (see its docstring) - both only
     # hook on_train_begin/on_epoch_end respectively, so its position relative to
-    # diagnostics/meta_writer doesn't matter, only relative to plateau_cb. lr_override_cb
-    # must also run after plateau_cb (see its docstring) - an override should always win
-    # over whatever plateau_cb just decided this epoch, not get silently clobbered by it.
-    # optimizer_state_cb has no ordering requirement - it only reads/writes
-    # model.optimizer's variables (momentum), which none of these other callbacks touch,
-    # only its learning_rate (a separate, unrelated attribute).
+    # diagnostics/meta_writer doesn't matter, only relative to plateau_cb.
     callbacks = [checkpointer]
     if warmup_cb is not None:
         callbacks.append(warmup_cb)
-    if range_lr_cb is not None:
-        callbacks.append(range_lr_cb)
     callbacks.append(diagnostics)
-    if range_diagnostics is not None:
-        callbacks.append(range_diagnostics)
+    if step_diagnostics is not None:
+        # Must also run before meta_writer, same reasoning as diagnostics above - it
+        # sets logs["weight_norm"]/logs["grad_norm_max"] each epoch.
+        callbacks.append(step_diagnostics)
         callbacks.append(TerminateOnNaN())
     if plateau_cb is not None:
         callbacks.append(plateau_cb)
-    if lr_override_cb is not None:
-        callbacks.append(lr_override_cb)
-    if optimizer_state_cb is not None:
-        callbacks.append(optimizer_state_cb)
     if plateau_state_restorer is not None:
         callbacks.append(plateau_state_restorer)
     callbacks.append(meta_writer)

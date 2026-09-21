@@ -28,3 +28,4 @@ AlphaGo/preprocessing/preprocessing.cpp
 AlphaGo/preprocessing/preprocessing.so
 AlphaGo/preprocessing/preprocessing.*.so
 AlphaGo/preprocessing/preprocessing.*.pyd
+AlphaGo/tmp_data
