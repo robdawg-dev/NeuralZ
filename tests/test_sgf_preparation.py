@@ -129,6 +129,45 @@ def test_scan_records_rejections_as_advisory_without_acting_on_them(tmp_path):
     assert rows["hint.sgf"]["gtype"] == "hintpos"
 
 
+def test_every_sgf_gets_a_row_however_malformed(tmp_path):
+    """The manifest must account for every .sgf walked. A file that cannot be parsed is
+    a finding to record, not a reason to omit it - otherwise "rows == files" stops being
+    a check you can rely on."""
+    src = _corpus(tmp_path, **{
+        "good.sgf": ANNOTATED,
+        "small.sgf": "(;GM[1]FF[4]SZ[9];B[aa];W[bb])",
+        "empty.sgf": "",
+        "garbage.sgf": "not an sgf at all",
+        "nomoves.sgf": "(;GM[1]FF[4]SZ[19]KM[7.5])",
+        "truncated.sgf": "(;GM[1]FF[4]SZ[19];B[pd]C[0.5",
+        "notsgf.txt": ANNOTATED,          # wrong extension - must NOT be scanned
+    })
+    manifest = str(tmp_path / "m.jsonl")
+    prep.main(["scan", src, manifest, "--quiet", "--workers", "1"])
+    rows = _rows(manifest)
+    assert len(rows) == 6, "one row per .sgf, and nothing else"
+    assert not any(r["path"].endswith(".txt") for r in rows)
+
+
+def test_a_malformed_annotation_does_not_kill_the_scan(tmp_path):
+    """The move regexes are permissive ([0-9.]+ matches "1.2.3"), so float() can raise on a
+    corrupt comment. That exception used to escape the worker, tear down the pool and
+    leave an EMPTY manifest - losing a multi-hour scan to one bad file out of millions."""
+    src = _corpus(tmp_path, **{
+        "ok1.sgf": ANNOTATED,
+        "bad.sgf": "(;GM[1]FF[4]SZ[19];B[pd]C[1.2.3 0.5 0.0 0.0 v=600 weight=1.00])",
+        "ok2.sgf": ANNOTATED,
+    })
+    manifest = str(tmp_path / "m.jsonl")
+    prep.main(["scan", src, manifest, "--quiet", "--workers", "1"])
+    rows = {os.path.basename(r["path"]): r for r in _rows(manifest)}
+    assert len(rows) == 3, "a malformed file cost other files their rows"
+    assert any("move_stats_error" in r for r in rows["bad.sgf"]["reasons"])
+    # the healthy files are unaffected
+    assert rows["ok1.sgf"]["n_blunder_gt10"] == 1
+    assert rows["ok2.sgf"]["reasons"] == []
+
+
 def test_scan_resume_appends_without_duplicating(tmp_path):
     names = {"f{}.sgf".format(i): ANNOTATED for i in range(10)}
     src = _corpus(tmp_path, **names)

@@ -29,3 +29,8 @@ AlphaGo/preprocessing/preprocessing.so
 AlphaGo/preprocessing/preprocessing.*.so
 AlphaGo/preprocessing/preprocessing.*.pyd
 AlphaGo/tmp_data
+
+# Scratch area for pipeline runs: manifests, keep-lists and shard sets produced by
+# sgf_preparation / game_converter_katago_data. Regenerable from the source SGFs, and
+# large (a manifest is ~46MB per 60k files; shards run to hundreds of GB).
+workspace/

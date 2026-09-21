@@ -182,15 +182,38 @@ def scan_one(path, with_move_stats=True, board_size=19):
     wrong_size = any(r.startswith("not_") for r in rec["reasons"])
 
     if with_move_stats and rec["sgf_ok"] and not wrong_size:
-        rec.update(move_stats(text))
+        try:
+            rec.update(move_stats(text))
+        except Exception as e:                            # noqa: BLE001
+            # A corrupt annotation must not cost the file its row, let alone the run.
+            # The regexes are permissive by design ([\d.]+ matches "1.2.3"), and at
+            # corpus scale a handful of malformed files is a certainty - one of them
+            # previously killed an entire multi-hour scan and left an EMPTY manifest,
+            # because the exception escaped the worker and tore down the pool.
+            rec["reasons"] = list(rec.get("reasons", ())) + [
+                "move_stats_error:" + type(e).__name__]
 
     fields = _HEADER_FIELDS + (_MOVE_STAT_FIELDS if with_move_stats else ())
     return {k: rec.get(k) for k in fields}
 
 
 def _scan_chunk(args):
+    """Belt and braces: a single unexpected failure must cost one row, never the chunk
+    (and therefore never the run). scan_one already guards the paths that are known to
+    fail; this catches anything not yet anticipated."""
     paths, with_move_stats, board_size = args
-    return [scan_one(p, with_move_stats, board_size) for p in paths]
+    out = []
+    for p in paths:
+        try:
+            out.append(scan_one(p, with_move_stats, board_size))
+        except Exception as e:                            # noqa: BLE001
+            row = {k: None for k in _HEADER_FIELDS}
+            if with_move_stats:
+                row.update({k: None for k in _MOVE_STAT_FIELDS})
+            row.update(path=p, sgf_ok=False,
+                       reasons=["scan_error:" + type(e).__name__])
+            out.append(row)
+    return out
 
 
 def _open_out(path, mode="w"):
