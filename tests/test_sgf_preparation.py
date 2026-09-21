@@ -262,6 +262,39 @@ def test_select_komi_band_is_configurable(tmp_path):
     assert _select(tmp_path, rows, "--komi-max", "16") == []
 
 
+def test_komi_band_does_not_apply_to_handicap_games(tmp_path):
+    """KataGo expresses handicap as komi compensation at ~13 pts/stone, so a 5-stone game
+    sits near komi 53. Judging that by the even-board band discarded ~50% of handicap
+    games - the data most wanted for play against handicap opponents."""
+    hcap = [_row(path="h.sgf", komi="53.5", handicap="5", n_ab=4)]
+    even = [_row(path="e.sgf", komi="53.5", handicap="0")]
+    assert _select(tmp_path, hcap) == ["h.sgf"], "handicap komi must not hit the band"
+    assert _select(tmp_path, even) == [], "even-board komi 53.5 is still out of range"
+    # tightening the band must still leave handicap games alone
+    assert _select(tmp_path, hcap, "--komi-max", "8") == ["h.sgf"]
+
+
+def test_handicap_games_still_get_a_sanity_bound(tmp_path):
+    """Loose, but not unbounded - the raw corpus holds komi of -303 and +359."""
+    assert _select(tmp_path, [_row(path="h.sgf", komi="200.5", handicap="5")]) == []
+    assert _select(tmp_path, [_row(path="h.sgf", komi="115.5", handicap="9")]) == ["h.sgf"]
+    assert _select(tmp_path, [_row(path="h.sgf", komi="200.5", handicap="5"),
+                              _row(path="i.sgf", komi="115.5", handicap="9")],
+                   "--handicap-komi-max", "250") == ["h.sgf", "i.sgf"]
+
+
+def test_handicap_uses_komi_band_restores_old_behaviour(tmp_path):
+    rows = [_row(path="h.sgf", komi="53.5", handicap="5")]
+    assert _select(tmp_path, rows) == ["h.sgf"]
+    assert _select(tmp_path, rows, "--handicap-uses-komi-band") == []
+
+
+def test_allow_no_komi_opt_out(tmp_path):
+    rows = [_row(path="a.sgf", komi=None)]
+    assert _select(tmp_path, rows) == []
+    assert _select(tmp_path, rows, "--allow-no-komi") == ["a.sgf"]
+
+
 def test_select_limit_stops_early(tmp_path):
     rows = [_row(path="f{}.sgf".format(i)) for i in range(50)]
     assert len(_select(tmp_path, rows, "--limit", "7")) == 7

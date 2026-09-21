@@ -448,7 +448,25 @@ stage A is settled.
       `_CF_SKIP` are hard-coded, so sizing `--drop-hopeless-mover` at anything other than
       0.05 needs a code edit - which defeats the purpose of the report. Trivial fix.
 
-- [ ] **B6. `no_komi` opt-out.** It is the only rejection criterion with no flag.
+- [x] **B6. `no_komi` opt-out.** **DONE 2026-09-21:** `--allow-no-komi` added.
+
+      Shipped alongside a **fix to the komi band itself**. `--komi-min/--komi-max` now
+      apply to **non-handicap games only**, because KataGo expresses handicap as komi
+      compensation at ~13 pts/stone (measured medians: HA2 15.5, HA3 27.5, HA4 39.0,
+      HA5 53.5, HA6 65.0, HA9 115.5). The flat `komi-max 30` was therefore acting as a
+      handicap filter - it discarded **49.9% of handicap games** while catching only 1.9%
+      of non-handicap ones.
+
+      Handicap games now get a loose sanity bound (`--handicap-komi-min/-max`, default
+      +/-120) which exists only to strip values no board supports; the raw corpus contains
+      komi of -303 and +359 on a 361-point board. Exactly **2 files** of 3,735 hit it.
+      `--handicap-uses-komi-band` restores the old behaviour.
+
+      Measured: keep rate 87.83% -> 91.14% (52,820 -> 54,806 files). Handicap games kept
+      46.8% -> 99.9%. By gtype: `handicap` +957, `asym` +905, `fork` +122, `normal`
+      and `sgfpos` unchanged.
+
+      **Note for B3:** this raises `asym` exposure, consistent with resolving B3 as (d).
 
 ### C. Filter values - set at generation time, no code
 

@@ -46,10 +46,11 @@ These are the defaults `sgf_preparation select` applies. Everything else is an o
 | D2 | `gtype=hintpos` | 2.20% | See below |
 | D3 | `gtype=hintfork` | 0.99% | Same as D2 |
 | D4 | `gtype=cleanuptraining` | 1.89% | Synthetic endgame/cleanup drilling. 0 initialisation moves, p90 first-winrate 0.97 — starts from already-decided positions. Not representative of play. |
-| D5 | komi outside `[-10, 30]` | ~12% | Komi is a **hidden variable**: KataGo feeds it to its network (`nninputs.cpp:1215`, `rowGlobal[5] = selfKomi/15.0`), this project's 48 planes do not contain it. A deliberately **generous outer bound** only — the real band is an open question, so this removes only values no plausible band would keep. |
+| D5 | komi outside `[-10, 30]`, **non-handicap games only** | ~4.4% | Komi is a **hidden variable**: KataGo feeds it to its network (`nninputs.cpp:1215`, `rowGlobal[5] = selfKomi/15.0`), this project's 48 planes do not contain it. A deliberately **generous outer bound** only — the real band is an open question, so this removes only values no plausible band would keep. |
 | D6 | unreadable / zero moves | ~0% | Unusable |
+| D5b | handicap games with komi outside `[-120, 120]` | 0.005% (2 files) | **Handicap komi is not a free parameter.** KataGo expresses handicap as compensation at ~13 pts/stone — the real value of a stone on 19x19. Measured medians: HA2 15.5, HA3 27.5, HA4 39.0, HA5 53.5, HA6 65.0, HA9 115.5. Applying the even-board band to these discarded **49.9% of handicap games**, the data most wanted for play against handicap opponents. They now get a loose sanity bound only, which exists because the raw corpus contains komi of -303 and +359 on a 361-point board. Restore the old behaviour with `--handicap-uses-komi-band`. |
 
-Measured together: **87.70% of files kept, 304 moves per surviving game.**
+Measured together: **91.14% of files kept, 305 moves per surviving game** (60,136 scanned -> 54,806 kept). Before the handicap-komi fix this was 87.83%; the difference is 1,986 handicap games, of which 957 are `gtype=handicap` and 905 `asym`.
 
 ### REVERSED — two rules this document previously specified and no longer does
 

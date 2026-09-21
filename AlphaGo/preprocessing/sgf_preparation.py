@@ -78,6 +78,19 @@ DEFAULT_EXCLUDE_GTYPES = ("hintpos", "hintfork", "cleanuptraining")
 DEFAULT_KOMI_MIN = -10.0
 DEFAULT_KOMI_MAX = 30.0
 
+# The komi band above applies ONLY to games without handicap stones.
+#
+# KataGo expresses handicap as komi compensation, at roughly 13 points per stone - the
+# real value of a handicap stone on 19x19. Measured medians: HA2 15.5, HA3 27.5, HA4 39.0,
+# HA5 53.5, HA6 65.0, HA9 115.5. So a flat komi-max of 30 is in effect a handicap filter:
+# it discarded 49.9% of handicap games while catching only 1.9% of non-handicap ones.
+#
+# Handicap games are instead bounded by the sanity limits below, which exist only to strip
+# values no board can support (the raw corpus contains komi of -303 and +359 on a
+# 361-point board). Only 2 handicap games of 3,735 exceeded 120.
+DEFAULT_HANDICAP_KOMI_MIN = -120.0
+DEFAULT_HANDICAP_KOMI_MAX = 120.0
+
 
 def _percentile(sorted_values, q):
     if not sorted_values:
@@ -352,9 +365,22 @@ def select_reasons(rec, args):
 
     komi = _float(rec.get("komi"))
     if komi is None:
-        out.append("no_komi")
-    elif not (args.komi_min <= komi <= args.komi_max):
-        out.append("komi_out_of_range")
+        if not args.allow_no_komi:
+            out.append("no_komi")
+    else:
+        # Handicap games get the loose sanity bound, not the training band - their komi is
+        # principled compensation (~13 pts/stone) and the board itself shows the imbalance,
+        # so it is not the hidden variable it is on an even board. See the note by
+        # DEFAULT_HANDICAP_KOMI_MIN.
+        try:
+            handicap = int(rec.get("handicap") or 0)
+        except (TypeError, ValueError):
+            handicap = 0
+        if handicap > 0 and not getattr(args, "handicap_uses_komi_band", False):
+            if not (args.handicap_komi_min <= komi <= args.handicap_komi_max):
+                out.append("handicap_komi_out_of_range")
+        elif not (args.komi_min <= komi <= args.komi_max):
+            out.append("komi_out_of_range")
 
     if args.min_moves and (rec.get("n_moves") or 0) < args.min_moves:
         out.append("too_short")
@@ -446,7 +472,11 @@ def main(cmd_line_args=None):
                    help="KataGo gtype to exclude; repeatable. Default: {}".format(
                        ",".join(DEFAULT_EXCLUDE_GTYPES)))
     p.add_argument("--komi-min", type=float, default=DEFAULT_KOMI_MIN, help="Default: {}".format(DEFAULT_KOMI_MIN))  # noqa: E501
-    p.add_argument("--komi-max", type=float, default=DEFAULT_KOMI_MAX, help="Default: {}. A deliberately GENEROUS outer bound - a tighter band is a training-time knob, not a file filter.".format(DEFAULT_KOMI_MAX))  # noqa: E501
+    p.add_argument("--komi-max", type=float, default=DEFAULT_KOMI_MAX, help="Default: {}. A deliberately GENEROUS outer bound - a tighter band is a training-time knob, not a file filter. Applies to non-handicap games only.".format(DEFAULT_KOMI_MAX))  # noqa: E501
+    p.add_argument("--handicap-komi-min", type=float, default=DEFAULT_HANDICAP_KOMI_MIN, help="Sanity bound for games WITH handicap stones, whose komi is compensation at ~13pts/stone rather than a free parameter. Default: {}".format(DEFAULT_HANDICAP_KOMI_MIN))  # noqa: E501
+    p.add_argument("--handicap-komi-max", type=float, default=DEFAULT_HANDICAP_KOMI_MAX, help="Default: {}".format(DEFAULT_HANDICAP_KOMI_MAX))  # noqa: E501
+    p.add_argument("--handicap-uses-komi-band", action="store_true", help="Apply --komi-min/--komi-max to handicap games too. Restores the pre-fix behaviour, which discarded ~50%% of handicap games.")  # noqa: E501
+    p.add_argument("--allow-no-komi", action="store_true", help="Keep games with no parseable KM. Off by default: komi is not a feature plane, so an unknown komi is an unknown offset.")  # noqa: E501
     p.add_argument("--min-moves", type=int, default=None, help="Drop games with fewer than this many moves")  # noqa: E501
     p.add_argument("--require-annotations", action="store_true", help="Drop games with no v=/winrate comments")  # noqa: E501
     p.add_argument("--require-weights", action="store_true", help="Drop games with no weight= (i.e. rating games)")  # noqa: E501
