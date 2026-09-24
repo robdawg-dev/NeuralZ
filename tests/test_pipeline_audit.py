@@ -116,6 +116,70 @@ def _uid(state):
     return int(state[0, 0, 0]) + 251 * int(state[0, 1, 0])
 
 
+def _shard_with_segments(path, segments, n_positions):
+    """Shard whose file_offsets are whatever `segments` says, independent of how many
+    rows the states dataset actually holds - so the two can be made to disagree."""
+    with h5.File(path, 'w') as f:
+        f.create_dataset('states', shape=(n_positions, BOARD, BOARD, NFEAT), dtype=np.uint8)
+        f.create_dataset('actions', shape=(n_positions, 2), dtype=np.uint8)
+        grp = f.create_group('file_offsets')
+        f['features'] = np.bytes_("board,ones")
+        for i, (start, length) in enumerate(segments):
+            grp["game{}".format(i)] = [start, length]
+    return path
+
+
+@pytest.mark.parametrize("segments,n_positions,expect", [
+    ([(0, 10), (10, 10), (20, 5)], 25, None),                  # exact tiling - must pass
+    ([(0, 10), (15, 10)], 25, "gap"),                          # rows 10..14 unclaimed
+    ([(0, 10), (8, 10)], 18, "overlap"),                       # game 2 starts inside game 1
+    ([(0, 10), (10, 20)], 25, "run past the end"),             # claims more than exists
+    ([(0, 10), (10, 5)], 25, "belong to no game"),             # rows 15..24 unclaimed
+    ([(0, 10), (10, 0)], 10, "at least one position"),         # zero-length game
+])
+def test_build_game_index_rejects_malformed_offsets(tmp_path, segments, n_positions, expect):
+    """file_offsets is written by the converter and never cross-checked against the states
+    dataset's own shape. Three of the four ways they can disagree are silent - only
+    running off the end raises, and not until that game is first drawn. Catch all of them
+    at startup instead."""
+    shard = _shard_with_segments(str(tmp_path / "s.h5"), segments, n_positions)
+    if expect is None:
+        games, _f, _bs, _nf = build_game_index([shard])
+        assert sum(g["length"] for g in games) == n_positions
+        return
+    with pytest.raises(ValueError) as exc:
+        build_game_index([shard])
+    assert expect in str(exc.value)
+    assert "s.h5" in str(exc.value), "the error must name the offending shard"
+
+
+def test_build_game_index_rejects_states_actions_mismatch(tmp_path):
+    shard = str(tmp_path / "s.h5")
+    with h5.File(shard, 'w') as f:
+        f.create_dataset('states', shape=(10, BOARD, BOARD, NFEAT), dtype=np.uint8)
+        f.create_dataset('actions', shape=(9, 2), dtype=np.uint8)
+        f.create_group('file_offsets')["game0"] = [0, 10]
+        f['features'] = np.bytes_("board,ones")
+    with pytest.raises(ValueError) as exc:
+        build_game_index([shard])
+    assert "exactly one label" in str(exc.value)
+
+
+def test_build_game_index_rejects_data_with_no_offsets(tmp_path):
+    shard = _shard_with_segments(str(tmp_path / "s.h5"), [], 25)
+    with pytest.raises(ValueError) as exc:
+        build_game_index([shard])
+    assert "no entries in its file_offsets" in str(exc.value)
+
+
+def test_real_converter_output_passes_offset_validation(tmp_path):
+    """The check must not fire on intact data - guards against it being too strict."""
+    shard = str(tmp_path / "s.h5")
+    total = _make_synthetic_shard(shard, [7, 13, 5, 40, 1, 22, 9, 3])
+    games, _f, _bs, _nf = build_game_index([shard])
+    assert sum(g["length"] for g in games) == total
+
+
 @pytest.mark.parametrize("buffer_size", [1, 3, 25, 100, 300])
 def test_epoch_positions_yields_every_position_exactly_once(tmp_path, buffer_size):
     shard = str(tmp_path / "s.h5")

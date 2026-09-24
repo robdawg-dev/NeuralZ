@@ -74,7 +74,29 @@ _RE_MOVE_ANNOT = re.compile(
 
 # Defaults for `select`. These are the criteria SGF_FILTER_POLICY.md records as "confident
 # there is no value" - everything else is left to explicit flags.
-DEFAULT_EXCLUDE_GTYPES = ("hintpos", "hintfork", "cleanuptraining")
+# An ALLOWLIST, not a denylist. Two of KataGo's eight game types are kept:
+#
+#   normal    52% of files, zero AB/AW setup stones, the baseline for every quality metric
+#   handicap   3% of files, 1-5 setup stones that are GENUINELY placed moves - in sequence,
+#              immediately before White's first move, exactly as the GTP path places them
+#              at play time. Nothing about them needs special handling.
+#
+# The six excluded types, and why:
+#   sgfpos, fork         AB block is a serialized mid-game BOARD (median 69 and 50 stones)
+#                        written in row-major raster order, all-black-then-all-white, with
+#                        captured stones absent. It carries no move order, so no faithful
+#                        turns_since representation exists. This is what --skip-setup-
+#                        positions existed to paper over.
+#   asym                 asymmetric playouts: the handicap-RECEIVING side runs ~142 visits
+#                        against ~373 and blunders 3.6x more. Worst blunder rate of any
+#                        gtype (0.27% vs normal's 0.12%) and the source of the 100-point
+#                        handicap blowouts.
+#   hintpos, hintfork    positions carrying a hinted move, deliberately biased toward it
+#   cleanuptraining      endgame/scoring drill, starts ~106 stones in
+#
+# An allowlist also fails safe: a new gtype in future KataGo data is excluded until looked
+# at, rather than silently included.
+DEFAULT_INCLUDE_GTYPES = ("normal", "handicap")
 DEFAULT_KOMI_MIN = -10.0
 DEFAULT_KOMI_MAX = 30.0
 
@@ -360,8 +382,8 @@ def select_reasons(rec, args):
         out.append("no_moves")
 
     gtype = rec.get("gtype")
-    if gtype in set(args.exclude_gtype):
-        out.append("gtype_{}".format(gtype))
+    if gtype not in set(args.include_gtype):
+        out.append("gtype_{}".format(gtype or "none"))
 
     komi = _float(rec.get("komi"))
     if komi is None:
@@ -376,23 +398,12 @@ def select_reasons(rec, args):
             handicap = int(rec.get("handicap") or 0)
         except (TypeError, ValueError):
             handicap = 0
-        if handicap > 0 and not getattr(args, "handicap_uses_komi_band", False):
+        if handicap > 0:
             if not (args.handicap_komi_min <= komi <= args.handicap_komi_max):
                 out.append("handicap_komi_out_of_range")
         elif not (args.komi_min <= komi <= args.komi_max):
             out.append("komi_out_of_range")
 
-    if args.min_moves and (rec.get("n_moves") or 0) < args.min_moves:
-        out.append("too_short")
-    if args.require_annotations and not rec.get("n_annotated"):
-        out.append("no_annotations")
-    if args.require_weights and not rec.get("n_weighted"):
-        out.append("no_training_weights")
-    if args.exclude_setup_stones and ((rec.get("n_ab") or 0) + (rec.get("n_aw") or 0)):
-        out.append("has_setup_stones")
-    if args.max_blunders is not None and \
-            (rec.get("n_blunder_gt10") or 0) > args.max_blunders:
-        out.append("too_many_blunders")
     return out
 
 
@@ -468,26 +479,22 @@ def main(cmd_line_args=None):
     p.add_argument("manifest", help="JSONL manifest produced by `scan`")
     p.add_argument("keeplist", help="Output path; one SGF path per line")
     p.add_argument("--board-size", type=int, default=19, help="Required SZ. Default: 19")
-    p.add_argument("--exclude-gtype", action="append", default=None,
-                   help="KataGo gtype to exclude; repeatable. Default: {}".format(
-                       ",".join(DEFAULT_EXCLUDE_GTYPES)))
+    p.add_argument("--include-gtype", action="append", default=None,
+                   help="KataGo gtype to KEEP; repeatable. Everything else is dropped. "
+                        "Default: {} - see the note by DEFAULT_INCLUDE_GTYPES for why "
+                        "the other six are excluded.".format(
+                            ",".join(DEFAULT_INCLUDE_GTYPES)))
     p.add_argument("--komi-min", type=float, default=DEFAULT_KOMI_MIN, help="Default: {}".format(DEFAULT_KOMI_MIN))  # noqa: E501
     p.add_argument("--komi-max", type=float, default=DEFAULT_KOMI_MAX, help="Default: {}. A deliberately GENEROUS outer bound - a tighter band is a training-time knob, not a file filter. Applies to non-handicap games only.".format(DEFAULT_KOMI_MAX))  # noqa: E501
     p.add_argument("--handicap-komi-min", type=float, default=DEFAULT_HANDICAP_KOMI_MIN, help="Sanity bound for games WITH handicap stones, whose komi is compensation at ~13pts/stone rather than a free parameter. Default: {}".format(DEFAULT_HANDICAP_KOMI_MIN))  # noqa: E501
     p.add_argument("--handicap-komi-max", type=float, default=DEFAULT_HANDICAP_KOMI_MAX, help="Default: {}".format(DEFAULT_HANDICAP_KOMI_MAX))  # noqa: E501
-    p.add_argument("--handicap-uses-komi-band", action="store_true", help="Apply --komi-min/--komi-max to handicap games too. Restores the pre-fix behaviour, which discarded ~50%% of handicap games.")  # noqa: E501
     p.add_argument("--allow-no-komi", action="store_true", help="Keep games with no parseable KM. Off by default: komi is not a feature plane, so an unknown komi is an unknown offset.")  # noqa: E501
-    p.add_argument("--min-moves", type=int, default=None, help="Drop games with fewer than this many moves")  # noqa: E501
-    p.add_argument("--require-annotations", action="store_true", help="Drop games with no v=/winrate comments")  # noqa: E501
-    p.add_argument("--require-weights", action="store_true", help="Drop games with no weight= (i.e. rating games)")  # noqa: E501
-    p.add_argument("--exclude-setup-stones", action="store_true", help="Drop games carrying AB/AW setup stones")  # noqa: E501
-    p.add_argument("--max-blunders", type=int, default=None, help="Drop games with more than this many >10%% winrate-loss moves")  # noqa: E501
     p.add_argument("--limit", type=int, default=None, help="Stop once this many files have been kept - use to build a fixed-size training set")  # noqa: E501
     p.set_defaults(func=cmd_select)
 
     args = parser.parse_args(cmd_line_args)
-    if getattr(args, "exclude_gtype", None) is None:
-        args.exclude_gtype = list(DEFAULT_EXCLUDE_GTYPES)
+    if getattr(args, "include_gtype", None) is None:
+        args.include_gtype = list(DEFAULT_INCLUDE_GTYPES)
     args.func(args)
 
 

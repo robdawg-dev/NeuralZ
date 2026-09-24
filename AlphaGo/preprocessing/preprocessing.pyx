@@ -73,37 +73,24 @@ cdef class Preprocess:
            - EMPTY locations are all-zero features
 
            SETUP STONES (SGF AB/AW):
-             place_handicap_stone appends to moves_history, so setup stones are
-             indistinguishable from played moves in the loops below. This affects handicap
-             placements and, far more commonly in KataGo selfplay data, sgfpos/fork/hintpos
-             games whose whole mid-game start position is serialized as an AB/AW block of
-             50-100 stones (43.7% of a 60k-file sample carried setup stones; ~87% of those
-             were whole-board resumptions, not handicap).
+             place_handicap_stone ends in do_move, so setup stones enter moves_history
+             exactly as played moves do and are aged like them here.
 
-             The AB/AW block carries NO temporal information - three separate reasons:
-               1. It is a raster scan of the board. Measured on 400 sgfpos files, the AB
-                  and AW lists are in row-major board order 100% of the time. The last
-                  stone in the list is the bottom-right one, not the most recent.
-               2. util.py applies all AB then all AW, so moves_history begins with every
-                  black stone followed by every white stone. The "7 most recent moves"
-                  read off it are 7 same-coloured stones - a shape alternating play can
-                  never produce.
-               3. It is the board STATE, not the move list: captured stones are simply
-                  absent. In 38.5% of sgfpos files nAB+nAW < init_turn_num (p90 = 7
-                  stones missing, max 73).
+             For HANDICAP games that is the correct representation, not a defect. The
+             stones really were placed in sequence immediately before White's first move,
+             so they really are the most recent events on the board, and the live GTP path
+             (place_handicaps -> place_handicap_stone -> do_move) builds the identical
+             history at play time. Pushing them into plane 7 instead would describe a
+             board where stones were played 7+ turns ago followed by 7 turns of nothing -
+             a state that cannot occur. One residual difference: KataGo writes handicap AB
+             in row-major order while GTP places from a fixed table, so the permutation of
+             ages WITHIN the handicap block differs between training and play.
 
-             So plane 7 is not a claim that these stones are old - it is the only bucket
-             that does not commit to a specific age.
-
-             Consequence: until 7 real moves have been played, setup stones occupy age
-             planes 0-6 and this feature is WRONG. From the 7th real move on it is exactly
-             correct, because plane 7 ("age >= 7") is the right bucket for a stone placed
-             before the game began. Verified empirically: contamination at position index
-             0-6, clean from 7 onward.
-
-             game_converter_katago_data.py therefore drops the first 7 positions of any
-             setup-bearing game by default (--skip-setup-positions, ~1% of all positions).
-             Do not generate training data with that set to 0.
+             For sgfpos/fork games it has no faithful representation: their AB block is a
+             serialized mid-game board (median 50-69 stones) in raster order, all black
+             then all white, with captured stones absent - no move order exists to encode.
+             Those game types are therefore excluded at select time (sgf_preparation's
+             DEFAULT_INCLUDE_GTYPES = normal, handicap), not handled here.
         """
 
         cdef location_t location
@@ -153,9 +140,9 @@ cdef class Preprocess:
                   guard that lets turns_since reject captured stones cannot be reused to
                   reject setup stones either.
 
-             Dropping the first 5 positions of setup-bearing games would fix it the same
-             way --skip-setup-positions fixes turns_since, but that is NOT wired up and NOT
-             tested. The converter's skip is sized for turns_since (7), not for this.
+             With the corpus restricted to normal + handicap games (see get_turns_since)
+             the serialized-board case no longer arises, but this feature is still untested
+             for training use.
 
              Measured relationship to turns_since, for reference: with no captures, planes
              0-4 here are IDENTICAL to turns_since planes 0-4 (passes and setup stones

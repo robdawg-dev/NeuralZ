@@ -227,8 +227,11 @@ def _row(**over):
     ({"gtype": "hintpos"}, False),
     ({"gtype": "hintfork"}, False),
     ({"gtype": "cleanuptraining"}, False),
-    ({"gtype": "asym"}, True),        # deliberately NOT excluded by default
-    ({"gtype": "sgfpos"}, True),
+    ({"gtype": "handicap"}, True),    # kept: its setup stones are genuine placements
+    ({"gtype": "asym"}, False),       # asymmetric playouts - weakened side
+    ({"gtype": "sgfpos"}, False),     # AB block is a serialized board, not a move order
+    ({"gtype": "fork"}, False),
+    ({"gtype": None}, False),         # allowlist fails safe on an unknown gtype
     ({"komi": "-40"}, False),
     ({"komi": "200"}, False),
     ({"komi": None}, False),
@@ -245,15 +248,12 @@ def test_select_default_criteria(tmp_path, over, kept):
     assert (_select(tmp_path, rows) == ["keepme.sgf"]) is kept
 
 
-def test_select_optional_criteria_are_off_by_default(tmp_path):
-    """Setup stones, missing weights and blunder counts are all deferred decisions - they
-    must not silently filter unless explicitly asked for."""
-    rows = [_row(path="a.sgf", n_ab=27, n_aw=13, n_weighted=0, n_blunder_gt10=9)]
+def test_select_does_not_filter_on_setup_stones_or_blunder_counts(tmp_path):
+    """Both were removed. Setup stones are meaningful only for gtypes the allowlist
+    already drops, and game-level blunder counts are superseded by the converter's
+    position-level --max-winrate-loss."""
+    rows = [_row(path="a.sgf", n_ab=5, n_aw=0, n_blunder_gt10=9)]
     assert _select(tmp_path, rows) == ["a.sgf"]
-    assert _select(tmp_path, rows, "--exclude-setup-stones") == []
-    assert _select(tmp_path, rows, "--require-weights") == []
-    assert _select(tmp_path, rows, "--max-blunders", "5") == []
-    assert _select(tmp_path, rows, "--max-blunders", "20") == ["a.sgf"]
 
 
 def test_select_komi_band_is_configurable(tmp_path):
@@ -283,11 +283,6 @@ def test_handicap_games_still_get_a_sanity_bound(tmp_path):
                    "--handicap-komi-max", "250") == ["h.sgf", "i.sgf"]
 
 
-def test_handicap_uses_komi_band_restores_old_behaviour(tmp_path):
-    rows = [_row(path="h.sgf", komi="53.5", handicap="5")]
-    assert _select(tmp_path, rows) == ["h.sgf"]
-    assert _select(tmp_path, rows, "--handicap-uses-komi-band") == []
-
 
 def test_allow_no_komi_opt_out(tmp_path):
     rows = [_row(path="a.sgf", komi=None)]
@@ -305,3 +300,11 @@ def test_select_is_repeatable_from_the_manifest_alone(tmp_path):
     is worth pinning: the manifest must be self-sufficient."""
     rows = [_row(path="/nonexistent/never/created.sgf")]
     assert _select(tmp_path, rows) == ["/nonexistent/never/created.sgf"]
+
+
+def test_gtype_allowlist_keeps_only_normal_and_handicap(tmp_path):
+    rows = [_row(path="n.sgf", gtype="normal"), _row(path="h.sgf", gtype="handicap"),
+            _row(path="s.sgf", gtype="sgfpos"), _row(path="a.sgf", gtype="asym"),
+            _row(path="f.sgf", gtype="fork"), _row(path="x.sgf", gtype="brand_new_type")]
+    assert _select(tmp_path, rows) == ["n.sgf", "h.sgf"]
+    assert _select(tmp_path, rows, "--include-gtype", "sgfpos") == ["s.sgf"]
