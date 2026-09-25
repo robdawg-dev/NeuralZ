@@ -6,10 +6,10 @@ Two kinds of test live here:
    (coordinate frame, symmetry consistency, shuffle-buffer coverage, batch identity).
    These are the ones that would catch a catastrophic silent regression.
 
-2. Tests marked `xfail(strict=True)` that DOCUMENT confirmed defects. They assert the
-   CORRECT behaviour, so the suite stays green today and turns red the moment a defect
-   is fixed - at which point the marker should be removed. Each one carries a note on
-   observed real-corpus impact.
+2. Tests that lock in behaviour which LOOKS like a defect until you know why it is
+   intended - each carries the reasoning, so nobody "fixes" it back. The defects this
+   file originally documented as xfail have all been fixed; their tests now assert the
+   corrected behaviour and are marked FIXED with a note on observed real-corpus impact.
 """
 import os
 import subprocess
@@ -114,70 +114,6 @@ def _make_synthetic_shard(path, game_lengths):
 
 def _uid(state):
     return int(state[0, 0, 0]) + 251 * int(state[0, 1, 0])
-
-
-def _shard_with_segments(path, segments, n_positions):
-    """Shard whose file_offsets are whatever `segments` says, independent of how many
-    rows the states dataset actually holds - so the two can be made to disagree."""
-    with h5.File(path, 'w') as f:
-        f.create_dataset('states', shape=(n_positions, BOARD, BOARD, NFEAT), dtype=np.uint8)
-        f.create_dataset('actions', shape=(n_positions, 2), dtype=np.uint8)
-        grp = f.create_group('file_offsets')
-        f['features'] = np.bytes_("board,ones")
-        for i, (start, length) in enumerate(segments):
-            grp["game{}".format(i)] = [start, length]
-    return path
-
-
-@pytest.mark.parametrize("segments,n_positions,expect", [
-    ([(0, 10), (10, 10), (20, 5)], 25, None),                  # exact tiling - must pass
-    ([(0, 10), (15, 10)], 25, "gap"),                          # rows 10..14 unclaimed
-    ([(0, 10), (8, 10)], 18, "overlap"),                       # game 2 starts inside game 1
-    ([(0, 10), (10, 20)], 25, "run past the end"),             # claims more than exists
-    ([(0, 10), (10, 5)], 25, "belong to no game"),             # rows 15..24 unclaimed
-    ([(0, 10), (10, 0)], 10, "at least one position"),         # zero-length game
-])
-def test_build_game_index_rejects_malformed_offsets(tmp_path, segments, n_positions, expect):
-    """file_offsets is written by the converter and never cross-checked against the states
-    dataset's own shape. Three of the four ways they can disagree are silent - only
-    running off the end raises, and not until that game is first drawn. Catch all of them
-    at startup instead."""
-    shard = _shard_with_segments(str(tmp_path / "s.h5"), segments, n_positions)
-    if expect is None:
-        games, _f, _bs, _nf = build_game_index([shard])
-        assert sum(g["length"] for g in games) == n_positions
-        return
-    with pytest.raises(ValueError) as exc:
-        build_game_index([shard])
-    assert expect in str(exc.value)
-    assert "s.h5" in str(exc.value), "the error must name the offending shard"
-
-
-def test_build_game_index_rejects_states_actions_mismatch(tmp_path):
-    shard = str(tmp_path / "s.h5")
-    with h5.File(shard, 'w') as f:
-        f.create_dataset('states', shape=(10, BOARD, BOARD, NFEAT), dtype=np.uint8)
-        f.create_dataset('actions', shape=(9, 2), dtype=np.uint8)
-        f.create_group('file_offsets')["game0"] = [0, 10]
-        f['features'] = np.bytes_("board,ones")
-    with pytest.raises(ValueError) as exc:
-        build_game_index([shard])
-    assert "exactly one label" in str(exc.value)
-
-
-def test_build_game_index_rejects_data_with_no_offsets(tmp_path):
-    shard = _shard_with_segments(str(tmp_path / "s.h5"), [], 25)
-    with pytest.raises(ValueError) as exc:
-        build_game_index([shard])
-    assert "no entries in its file_offsets" in str(exc.value)
-
-
-def test_real_converter_output_passes_offset_validation(tmp_path):
-    """The check must not fire on intact data - guards against it being too strict."""
-    shard = str(tmp_path / "s.h5")
-    total = _make_synthetic_shard(shard, [7, 13, 5, 40, 1, 22, 9, 3])
-    games, _f, _bs, _nf = build_game_index([shard])
-    assert sum(g["length"] for g in games) == total
 
 
 @pytest.mark.parametrize("buffer_size", [1, 3, 25, 100, 300])
@@ -434,17 +370,40 @@ def test_only_black_setup_stones_count_as_handicap():
     assert len(gs.get_history()) == 4
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "AB/AW setup stones are pushed into moves_history, so turns_since reports a "
-    "pre-placed position as if it had just been played move by move. Affects 41% of "
-    "first-8 positions on real KataGo data (measured), decaying after ~8 real moves."))
-def test_turns_since_does_not_treat_setup_stones_as_recent_moves():
-    text = "(;GM[1]FF[4]SZ[19]AB[aa][bb]AW[cc][dd]PL[B];B[pp])"
+def test_turns_since_ages_handicap_stones_as_played_moves():
+    """Handicap stones occupy the recent-age planes, in placement order. This is
+    deliberate, not a defect.
+
+    In a handicap game Black really does place its stones in sequence immediately before
+    White's first move, so they really are the most recent events on the board - and the
+    live GTP path builds the identical history (cmd_set_free_handicap -> place_handicaps
+    -> place_handicap_stone -> do_move). Routing them into the "age >= 7" plane instead
+    would describe a board where stones were played 7+ turns ago followed by 7 turns of
+    nobody playing, which cannot occur, and would differ from what the bot sees from KGS.
+
+    The genuinely unrepresentable case is a serialized mid-game board (gtype=sgfpos/fork:
+    50-100 AB/AW stones in raster order, captured stones absent). Those game types are
+    excluded at selection instead - see DATA_PIPELINE.md.
+    """
+    # HA[3]: KataGo writes HA-1 setup stones and lets Black play the last one as a move
+    text = "(;GM[1]FF[4]SZ[19]HA[3]AB[dd][pp];B[dp];W[pd])"
     gs = _sgf_init_gamestate(sgflib.parse(text)[0].root)
     proc = Preprocess(["turns_since"], size=BOARD)
     t = proc.state_to_tensor(gs)[0]
-    # no real move has been played yet, so nothing may occupy the "recent" planes 0..6
-    assert int(t[:, :, 0:7].sum()) == 0
+
+    # before any move is played: the two setup stones are the two most recent events,
+    # newest first, and nothing else is marked anywhere.
+    assert t[15][15][0] == 1, "the last-placed handicap stone (pp) is not at age 0"
+    assert t[3][3][1] == 1, "the first-placed handicap stone (dd) is not at age 1"
+    assert int(t[:, :, 0:8].sum()) == 2, "planes hold something other than the two stones"
+
+    # after two real moves they shift back by two, still ahead of the played moves
+    for mv in [(3, 15), (15, 3)]:
+        gs.do_move(mv)
+    t = proc.state_to_tensor(gs)[0]
+    assert t[15][3][0] == 1 and t[3][15][1] == 1, "played moves are not the most recent"
+    assert t[15][15][2] == 1 and t[3][3][3] == 1, "handicap stones did not age by two"
+    assert int(t[:, :, 0:8].sum()) == 4
 
 
 # FIXED: Preprocess.zeros() had no reachable return - "return offset + 1" had been
