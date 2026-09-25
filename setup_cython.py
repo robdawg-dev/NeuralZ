@@ -1,7 +1,6 @@
 """Build script for the Cython-accelerated engine (the default AlphaGo.go /
-AlphaGo.preprocessing.preprocessing). The frozen pure-Python reference implementations
-(AlphaGo/go_python.py, AlphaGo/preprocessing/preprocessing_python.py,
-AlphaGo/preprocessing/game_converter_python.py) are unaffected by this build.
+AlphaGo.preprocessing.preprocessing). The frozen pure-Python reference
+implementations they superseded now live in deprecated/ and are unaffected by this build.
 
 Run with: python setup_cython.py build_ext --inplace
 """

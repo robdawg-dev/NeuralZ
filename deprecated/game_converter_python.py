@@ -7,8 +7,8 @@ AlphaGo.util, which now targets the Cython engine's API) so this stays a true fr
 reference for future correctness comparisons.
 """
 import numpy as np
-from AlphaGo.preprocessing.preprocessing_python import Preprocess
-import AlphaGo.go_python as go
+from preprocessing_python import Preprocess
+import go_python as go
 import os
 import warnings
 import sgf

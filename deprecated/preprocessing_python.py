@@ -1,5 +1,5 @@
 import numpy as np
-import AlphaGo.go_python as go
+import go_python as go
 import keras.backend as K
 
 # This file is used anywhere that neural net features are used; setting the keras dimension ordering
