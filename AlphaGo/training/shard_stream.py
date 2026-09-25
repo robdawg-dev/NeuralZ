@@ -31,6 +31,11 @@ BATCH_TRANSFORMATIONS = {
 
 SYMMETRY_BLOCK = 4096
 
+# Shard handles kept open at once. Two is enough for a forward stream: the shard being read
+# and the next one, which a batch spanning a boundary also touches. Python 3.7+ dicts keep
+# insertion order, so the oldest is the one evicted.
+_OPEN_SHARDS = 2
+
 
 def find_split_shards(root, split):
     shards = sorted(glob.glob(os.path.join(root, split, "shard_*.h5")))
@@ -70,8 +75,16 @@ class _Reader(object):
         self.handles = {}
 
     def _file(self, i):
+        """Open shard i, keeping only the last few handles.
+
+        Reading is strictly forward, so a handle the stream has moved past is dead weight:
+        HDF5 keeps a chunk cache per open dataset, which at a few hundred shards adds up to
+        hundreds of MB for data that will not be read again until the next pass.
+        """
         if i not in self.handles:
             self.handles[i] = h5.File(self.shards[i], "r")
+            while len(self.handles) > _OPEN_SHARDS:
+                self.handles.pop(next(iter(self.handles))).close()
         return self.handles[i]
 
     def read(self, position, n):

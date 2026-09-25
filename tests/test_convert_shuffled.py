@@ -60,7 +60,8 @@ def _selection(tmp_path, splits):
 
 def _run(sel, out, *extra):
     conv.main([sel, out, "--features", FEATURES, "--workers", "2", "--quiet",
-               "--positions-per-shard", "150"] + list(extra))
+               "--positions-per-bucket", "150", "--positions-per-file", "150"]
+              + list(extra))
 
 
 def _load(split_dir):
@@ -151,3 +152,23 @@ def test_refuses_to_overwrite_existing_output(tmp_path):
     _run(sel, out, "--splits", "train")
     with pytest.raises(SystemExit):
         _run(sel, out, "--splits", "train")
+
+
+def test_shard_size_is_independent_of_bucket_size(tmp_path):
+    """Buckets are a memory knob, shards are packaging. Grouping several buckets into one
+    shard must leave the position SEQUENCE identical - only where the file boundaries fall
+    changes."""
+    games = [(s, None) for s in range(20)]
+    sel = _selection(tmp_path, {"train": games})
+    one = str(tmp_path / "one")      # one bucket per shard
+    many = str(tmp_path / "many")    # four buckets per shard
+    _run(sel, one, "--splits", "train")
+    conv.main([sel, many, "--features", FEATURES, "--workers", "2", "--quiet",
+               "--splits", "train", "--positions-per-bucket", "150",
+               "--positions-per-file", "600"])
+
+    shards_one, data_one = _load(os.path.join(one, "train"))
+    shards_many, data_many = _load(os.path.join(many, "train"))
+    assert len(shards_many) < len(shards_one), "grouping did not reduce the file count"
+    for key in ("game_id", "move", "actions", "states"):
+        assert np.array_equal(data_one[key], data_many[key]),             "{} differs: grouping changed the position order".format(key)

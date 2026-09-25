@@ -180,6 +180,14 @@ bit-pack each position (17,328 bytes → 2,166 at 48 planes) and the main proces
 appends bytes. Compressing into HDF5 there was the pass-1 bottleneck, because HDF5 calls
 cannot run in parallel from Python.
 
+**Bucket size and shard size are separate knobs.** A bucket must fit in a pass-2 worker's
+memory to be shuffled (`--positions-per-bucket`, default 100k ≈ 220MB packed); a shard is
+only how the result is packaged on disk (`--positions-per-file`, default 1M ≈ 2.5GB), and
+several whole buckets go into one. Appending bucket by bucket keeps peak memory at one
+bucket however large the shards are, and the position order is identical either way — only
+where the file boundaries fall changes. The 40M set below predates this and was written
+1:1, giving 373 shards of 252MB.
+
 **Shard contents:** `states` (N,19,19,F) uint8, `actions` (N,2) uint8, `game_id` (N,) int32,
 `move` (N,) int16, plus `features` and `conversion_args`. `game_id` indexes
 `<split>/games.tsv`, so any position traces back to its SGF and move number.

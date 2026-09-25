@@ -13,8 +13,15 @@ stream them start to finish with no shuffle buffer. This is done in two passes:
   pass 1  convert every game, sending each position to one of K bucket files chosen at
           random. Buckets live on disk and grow until the last game is done, so every
           bucket ends up with a random ~1/K of positions drawn from ALL games.
-  pass 2  load each bucket, shuffle it in memory, write it out as a shard, and delete
-          the bucket. Buckets are independent, so several are done in parallel.
+  pass 2  load each bucket, shuffle it in memory, append it to a shard, and delete the
+          bucket. Shards are independent, so several are written in parallel.
+
+Bucket size and shard size are separate knobs. A bucket must fit in a pass-2 worker's
+memory to be shuffled (--positions-per-bucket); a shard is just how the result is packaged
+on disk (--positions-per-file), and several whole buckets go into one. Appending bucket by
+bucket keeps peak memory at one bucket however large the shards are. The order is
+unchanged either way - file boundaries fall in different places, but the position sequence
+is the same, so a shard set is uniform regardless of how it is packaged.
 
 Buckets are raw files of fixed-size records rather than HDF5. Every feature plane is 0/1,
 so workers bit-pack each position (17,328 bytes -> 2,166 at 48 planes) and the main
@@ -211,33 +218,48 @@ def _read_keeplist(path):
 
 
 def _write_shard(job, block=8192):
-    """Shuffle one bucket into a shard. Runs in a pass-2 worker. Written under a temp
-    name and renamed, so a shard that exists is always complete."""
-    (bucket_path, shard_path, seed, board_size, n_features, features,
+    """Shuffle a group of buckets into one shard, in order, then delete them.
+
+    Runs in a pass-2 worker. Only one bucket is held in memory at a time, so the shard may
+    be far larger than a bucket. Written under a temp name and renamed, so a shard that
+    exists on disk is always complete.
+    """
+    (bucket_paths, seeds, shard_path, board_size, n_features, features,
      conversion_args) = job
-    rec = np.fromfile(bucket_path, dtype=record_dtype(board_size, n_features))
-    n = len(rec)
-    rec = rec[np.random.default_rng(seed).permutation(n)]
+    dtype = record_dtype(board_size, n_features)
     shape = (board_size, board_size, n_features)
     bits = board_size * board_size * n_features
     tmp = shard_path + ".partial"
+    written = 0
     with h5.File(tmp, "w") as s:
-        states = _create(s, "states", shape, np.uint8, n)
-        actions = _create(s, "actions", (2,), np.uint8, n)
-        game_id = _create(s, "game_id", (), np.int32, n)
-        move = _create(s, "move", (), np.int16, n)
-        for start in range(0, n, block):
-            part = rec[start:start + block]
-            states[start:start + len(part)] = np.unpackbits(
-                part["state"], axis=1, count=bits).reshape((len(part),) + shape)
-        actions[:] = rec["action"]
-        game_id[:] = rec["game_id"]
-        move[:] = rec["move"]
+        states = _create(s, "states", shape, np.uint8)
+        actions = _create(s, "actions", (2,), np.uint8)
+        game_id = _create(s, "game_id", (), np.int32)
+        move = _create(s, "move", (), np.int16)
+        for bucket_path, seed in zip(bucket_paths, seeds):
+            rec = np.fromfile(bucket_path, dtype=dtype)
+            n = len(rec)
+            if n:
+                rec = rec[np.random.default_rng(seed).permutation(n)]
+                base = written
+                for ds in (states, actions, game_id, move):
+                    ds.resize(base + n, axis=0)
+                for start in range(0, n, block):
+                    part = rec[start:start + block]
+                    at = base + start
+                    states[at:at + len(part)] = np.unpackbits(
+                        part["state"], axis=1, count=bits).reshape((len(part),) + shape)
+                actions[base:base + n] = rec["action"]
+                game_id[base:base + n] = rec["game_id"]
+                move[base:base + n] = rec["move"]
+                written += n
+            del rec
         s["features"] = np.bytes_(",".join(features))
         s["conversion_args"] = np.bytes_(conversion_args)
     os.replace(tmp, shard_path)
-    os.remove(bucket_path)
-    return n
+    for bucket_path in bucket_paths:
+        os.remove(bucket_path)
+    return written
 
 
 def convert_split(split, games, out_dir, args, features, conversion_args):
@@ -246,7 +268,8 @@ def convert_split(split, games, out_dir, args, features, conversion_args):
     os.makedirs(bucket_dir, exist_ok=True)
 
     est = sum(g[1] for g in games) * POSITIONS_PER_MOVE
-    k = max(1, int(math.ceil(est / args.positions_per_shard)))
+    k = max(1, int(math.ceil(est / args.positions_per_bucket)))
+    per_file = max(1, int(round(args.positions_per_file / args.positions_per_bucket)))
     split_index = SPLITS.index(split)
     rng = np.random.default_rng([args.seed, split_index])
     n_features = Preprocess(features, size=args.size).get_output_dimension()
@@ -293,12 +316,16 @@ def convert_split(split, games, out_dir, args, features, conversion_args):
             h.close()
     pass1 = time.time() - start
 
-    print("[{}] pass 2: shuffling {} buckets into shards ({} workers)".format(
-        split, k, args.pass2_workers), flush=True)
+    groups = [list(range(i, min(i + per_file, k))) for i in range(0, k, per_file)]
+    print("[{}] pass 2: shuffling {} buckets into {} shards, {} buckets each "
+          "({} workers)".format(split, k, len(groups), per_file, args.pass2_workers),
+          flush=True)
     t2 = time.time()
-    shard_jobs = [(bucket_paths[i], os.path.join(split_dir, "shard_{:05d}.h5".format(i)),
-                   [args.seed, split_index, i], args.size, n_features, features,
-                   conversion_args) for i in range(k)]
+    shard_jobs = [([bucket_paths[i] for i in group],
+                   [[args.seed, split_index, i] for i in group],
+                   os.path.join(split_dir, "shard_{:05d}.h5".format(n)),
+                   args.size, n_features, features, conversion_args)
+                  for n, group in enumerate(groups)]
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.pass2_workers) as pool:
         sizes = list(pool.map(_write_shard, shard_jobs))
     os.rmdir(bucket_dir)
@@ -320,7 +347,9 @@ def convert_split(split, games, out_dir, args, features, conversion_args):
         "dropped_max_winrate_loss": stats["dropped_winrate"],
         "dropped_max_winrate_loss_pct": 100.0 * stats["dropped_winrate"] / max(eligible, 1),
         "truncated_games": dict(truncations),
-        "shards": k,
+        "buckets": k,
+        "shards": len(groups),
+        "buckets_per_shard": per_file,
         "positions_per_shard_min_max": [min(sizes), max(sizes)] if sizes else [0, 0],
         "pass1_seconds": round(pass1, 1),
         "pass2_seconds": round(pass2, 1),
@@ -351,9 +380,14 @@ def main(argv=None):
     p.add_argument("--max-winrate-loss", type=float, default=None,
                    help="Drop positions whose move gave up more than this much winrate "
                         "(production runs use 0.10). Off by default.")
-    p.add_argument("--positions-per-shard", type=int, default=100000,
-                   help="Target shard size. Each pass-2 worker holds one bucket in memory, "
-                        "bit-packed: ~2.2KB per position, so 100k is ~220MB.")
+    p.add_argument("--positions-per-bucket", type=int, default=100000,
+                   help="Pass-2 memory knob: a whole bucket is held in memory to be "
+                        "shuffled, bit-packed at ~2.2KB per position, so 100k is ~220MB "
+                        "(and ~2x that briefly while permuting).")
+    p.add_argument("--positions-per-file", type=int, default=1000000,
+                   help="Shard size on disk, rounded to a whole number of buckets. Only "
+                        "affects packaging: peak memory stays one bucket, and the position "
+                        "order is identical however the shards are cut. 1M is ~2.5GB.")
     p.add_argument("--pass2-workers", type=int, default=8,
                    help="Buckets shuffled into shards in parallel")
     p.add_argument("--workers", type=int, default=None)

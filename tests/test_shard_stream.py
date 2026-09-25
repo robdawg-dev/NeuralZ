@@ -95,3 +95,19 @@ def test_dataset_info_rejects_mismatched_shards(tmp_path):
         paths.append(p)
     with pytest.raises(ValueError):
         ss.dataset_info(paths)
+
+
+def test_reader_does_not_hoard_open_shard_handles(shards):
+    """Reading is forward-only, so handles left open just hold HDF5 chunk caches - at a few
+    hundred shards that is hundreds of MB for data not read again until the next pass."""
+    train = ss.find_split_shards(shards, "train")
+    _f, board, _p, sizes = ss.dataset_info(train)
+    assert len(train) > ss._OPEN_SHARDS, "test needs more shards than the handle cap"
+    reader = ss._Reader(train, sizes)
+    try:
+        for position in range(0, sum(sizes), max(1, sum(sizes) // 20)):
+            reader.read(position, 16)
+            assert len(reader.handles) <= ss._OPEN_SHARDS
+    finally:
+        reader.close()
+    assert reader.handles == {}
