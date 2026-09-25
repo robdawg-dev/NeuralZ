@@ -1,32 +1,24 @@
 #!/usr/bin/env python
-"""Two-phase corpus preparation: scan a tree of SGF files once, then select from the
-result as often as you like.
+"""Scan a tree of SGF files once, recording one JSONL row per file.
 
-    scan    walk a directory tree, record one JSONL row per file, write nothing else
-    select  read that manifest, apply criteria, emit a keep-list for the converter
+    python -m AlphaGo.preprocessing.sgf_preparation scan <root> <manifest.jsonl>
 
-Why two phases
---------------
-Conversion is the expensive step in this pipeline - roughly 5 hours per 330k games, so a
-multi-million game corpus is a 60+ hour run. The scan is cheap by comparison (~1,800
-files/sec measured). So the rule throughout is: **anything cheap to record should be
-recorded, not decided.** A criterion baked in at scan time costs a full re-scan to change;
-a criterion applied at select time costs seconds.
+Nothing is filtered, modified or deleted here. The manifest is a record of what the
+corpus contains, and every later question - which games to train on, how big a set to
+build, what the komi or handicap distribution looks like - is answered by reading it
+rather than by touching the SGFs again.
 
-That is why `scan` writes a row for EVERY file, including ones no sensible policy would
-keep. Rejection reasons are recorded, not acted on. `select` is where policy lives, and
-re-running it never re-reads the corpus.
+Conversion is the expensive step in this pipeline (hours per 100k games), while the scan
+runs at ~1,400 files/sec. So the rule is: anything cheap to record should be recorded,
+not decided. A criterion baked in at scan time costs a full re-scan to change.
 
-Nothing here deletes or modifies an SGF. `select` emits a keep-list (a plain text file of
-paths, one per line) which the converter consumes. Deletion, if ever wanted, is a separate
-step that reads the same manifest.
+That is why a row is written for EVERY file, including ones no sensible policy would
+keep. Rejection reasons are recorded as advisory strings, never acted on.
 
-What is deliberately NOT decided here
--------------------------------------
-File-level properties only. Anything per-POSITION - blunder suppression, decided-position
-filtering, skipping the first N positions of a setup-stone game - belongs in
-game_converter, because those decisions need to travel with the position they describe.
-See SGF_FILTER_POLICY.md for the full split and the reasoning behind each criterion.
+Downstream:
+    select_games.py   reads this manifest and writes the train/val/test keep-lists
+    convert_shuffled.py  turns those keep-lists into shuffled training shards
+    sgf_cull.py       separately, deletes files that are not 19x19 normal/handicap games
 
 Manifest schema (one JSON object per line)
 ------------------------------------------
@@ -41,7 +33,7 @@ Per-move aggregates (so move-level questions can be answered without per-move st
     n_blunder_gt05, n_blunder_gt10, n_blunder_gt20,
     n_decided, n_mover_hopeless
 Bookkeeping:
-    reasons  (list of strings; advisory, applied by `select` not by `scan`)
+    reasons  (list of strings; advisory only - nothing here acts on them)
 
 `game_hash` is KataGo's own per-game identifier. It is captured because cross-download
 duplicate detection is free here and expensive to add later, once you are pulling from an
@@ -72,48 +64,6 @@ _RE_MOVE_ANNOT = re.compile(
     r"(?:C\[\s*(-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) v=(\d+)"
     r"(?: rv=(\d+))?(?: weight=([\d.]+))?[^\]]*\])?")
 
-# Defaults for `select`. These are the criteria SGF_FILTER_POLICY.md records as "confident
-# there is no value" - everything else is left to explicit flags.
-# An ALLOWLIST, not a denylist. Two of KataGo's eight game types are kept:
-#
-#   normal    52% of files, zero AB/AW setup stones, the baseline for every quality metric
-#   handicap   3% of files, 1-5 setup stones that are GENUINELY placed moves - in sequence,
-#              immediately before White's first move, exactly as the GTP path places them
-#              at play time. Nothing about them needs special handling.
-#
-# The six excluded types, and why:
-#   sgfpos, fork         AB block is a serialized mid-game BOARD (median 69 and 50 stones)
-#                        written in row-major raster order, all-black-then-all-white, with
-#                        captured stones absent. It carries no move order, so no faithful
-#                        turns_since representation exists. This is what --skip-setup-
-#                        positions existed to paper over.
-#   asym                 asymmetric playouts: the handicap-RECEIVING side runs ~142 visits
-#                        against ~373 and blunders 3.6x more. Worst blunder rate of any
-#                        gtype (0.27% vs normal's 0.12%) and the source of the 100-point
-#                        handicap blowouts.
-#   hintpos, hintfork    positions carrying a hinted move, deliberately biased toward it
-#   cleanuptraining      endgame/scoring drill, starts ~106 stones in
-#
-# An allowlist also fails safe: a new gtype in future KataGo data is excluded until looked
-# at, rather than silently included.
-DEFAULT_INCLUDE_GTYPES = ("normal", "handicap")
-DEFAULT_KOMI_MIN = -10.0
-DEFAULT_KOMI_MAX = 30.0
-
-# The komi band above applies ONLY to games without handicap stones.
-#
-# KataGo expresses handicap as komi compensation, at roughly 13 points per stone - the
-# real value of a handicap stone on 19x19. Measured medians: HA2 15.5, HA3 27.5, HA4 39.0,
-# HA5 53.5, HA6 65.0, HA9 115.5. So a flat komi-max of 30 is in effect a handicap filter:
-# it discarded 49.9% of handicap games while catching only 1.9% of non-handicap ones.
-#
-# Handicap games are instead bounded by the sanity limits below, which exist only to strip
-# values no board can support (the raw corpus contains komi of -303 and +359 on a
-# 361-point board). Only 2 handicap games of 3,735 exceeded 120.
-DEFAULT_HANDICAP_KOMI_MIN = -120.0
-DEFAULT_HANDICAP_KOMI_MAX = 120.0
-
-
 def _percentile(sorted_values, q):
     if not sorted_values:
         return None
@@ -132,7 +82,7 @@ def move_stats(text, blunder_thresholds=(0.05, 0.10, 0.20), decided=0.95):
     up. That is a direct measure of move quality, which KataGo's own training `weight`
     does not encode.
 
-    Two caveats, both recorded in SGF_FILTER_POLICY.md:
+    Two caveats, both recorded in DATA_PIPELINE.md:
     - winrate is written with %.2f, so resolution is coarse. Useful for catching real
       blunders, not for ranking near-equal moves.
     - the mean is biased (a mover's own search is slightly optimistic about the move it
@@ -174,7 +124,7 @@ def move_stats(text, blunder_thresholds=(0.05, 0.10, 0.20), decided=0.95):
 
 
 # Every row carries every key, with None where the file did not supply a value. A manifest
-# exists to be queried - by `select`, and by hand when sizing a criterion - and a consumer
+# exists to be queried - by select_games.py, and by hand when sizing a criterion - and a consumer
 # should never have to distinguish "field absent" from "field null". Files lacking a root
 # comment (anything not written by KataGo selfplay) would otherwise silently omit
 # gtype/game_hash/start_turn_idx and make every query guard for it.
@@ -364,102 +314,10 @@ def _bounded_map(pool, fn, work, max_in_flight):
             _submit()
 
 
-def _float(value):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def select_reasons(rec, args):
-    """Why this file would be excluded. Empty list means keep."""
-    out = []
-    if not rec.get("sgf_ok", False):
-        out.append("unreadable")
-    if rec.get("size") != str(args.board_size):
-        out.append("not_{}x{}".format(args.board_size, args.board_size))
-    if not rec.get("n_moves"):
-        out.append("no_moves")
-
-    gtype = rec.get("gtype")
-    if gtype not in set(args.include_gtype):
-        out.append("gtype_{}".format(gtype or "none"))
-
-    komi = _float(rec.get("komi"))
-    if komi is None:
-        if not args.allow_no_komi:
-            out.append("no_komi")
-    else:
-        # Handicap games get the loose sanity bound, not the training band - their komi is
-        # principled compensation (~13 pts/stone) and the board itself shows the imbalance,
-        # so it is not the hidden variable it is on an even board. See the note by
-        # DEFAULT_HANDICAP_KOMI_MIN.
-        try:
-            handicap = int(rec.get("handicap") or 0)
-        except (TypeError, ValueError):
-            handicap = 0
-        if handicap > 0:
-            if not (args.handicap_komi_min <= komi <= args.handicap_komi_max):
-                out.append("handicap_komi_out_of_range")
-        elif not (args.komi_min <= komi <= args.komi_max):
-            out.append("komi_out_of_range")
-
-    return out
-
-
-def cmd_select(args):
-    kept = 0
-    total = 0
-    rejected = collections.Counter()
-    kept_moves = 0
-    out = _open_out(args.keeplist)
-    try:
-        with _open_in(args.manifest) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                total += 1
-                try:
-                    rec = json.loads(line)
-                except ValueError:
-                    rejected["unparseable_manifest_row"] += 1
-                    continue
-                reasons = select_reasons(rec, args)
-                if reasons:
-                    for r in reasons:
-                        rejected[r] += 1
-                    rejected["__any__"] += 1
-                    continue
-                out.write(rec["path"] + "\n")
-                kept += 1
-                kept_moves += rec.get("n_moves") or 0
-                if args.limit and kept >= args.limit:
-                    break
-    finally:
-        out.close()
-
-    print("manifest rows read : {:,}".format(total))
-    print("rejected           : {:,}  ({:.2f}%)".format(
-        rejected["__any__"], 100.0 * rejected["__any__"] / max(1, total)))
-    for r, c in rejected.most_common():
-        if r == "__any__":
-            continue
-        print("   {:28s} {:>10,}  ({:5.2f}%)".format(r, c, 100.0 * c / max(1, total)))
-    print("KEPT               : {:,}  ({:.2f}%)".format(kept, 100.0 * kept / max(1, total)))
-    print("moves in kept games: {:,}  ({:,.0f} per game)".format(
-        kept_moves, kept_moves / max(1, kept)))
-    print("keep-list          : {}".format(args.keeplist))
-    if args.limit and kept >= args.limit:
-        print("\n(stopped at --limit {:,}; the manifest was not read to the end)".format(
-            args.limit))
-
-
 def main(cmd_line_args=None):
     parser = argparse.ArgumentParser(
-        description="Prepare an SGF corpus for conversion: scan once into a manifest, "
-                    "then select from it as often as needed. Never modifies or deletes "
-                    "any SGF.")
+        description="Scan an SGF corpus into a JSONL manifest. Never modifies or "
+                    "deletes any SGF; selection lives in select_games.py.")
     sub = parser.add_subparsers(dest="command")
     sub.required = True
 
@@ -475,26 +333,7 @@ def main(cmd_line_args=None):
     p.add_argument("--quiet", action="store_true", help="Suppress the periodic throughput line")  # noqa: E501
     p.set_defaults(func=cmd_scan)
 
-    p = sub.add_parser("select", help="Filter a manifest into a keep-list of paths")
-    p.add_argument("manifest", help="JSONL manifest produced by `scan`")
-    p.add_argument("keeplist", help="Output path; one SGF path per line")
-    p.add_argument("--board-size", type=int, default=19, help="Required SZ. Default: 19")
-    p.add_argument("--include-gtype", action="append", default=None,
-                   help="KataGo gtype to KEEP; repeatable. Everything else is dropped. "
-                        "Default: {} - see the note by DEFAULT_INCLUDE_GTYPES for why "
-                        "the other six are excluded.".format(
-                            ",".join(DEFAULT_INCLUDE_GTYPES)))
-    p.add_argument("--komi-min", type=float, default=DEFAULT_KOMI_MIN, help="Default: {}".format(DEFAULT_KOMI_MIN))  # noqa: E501
-    p.add_argument("--komi-max", type=float, default=DEFAULT_KOMI_MAX, help="Default: {}. A deliberately GENEROUS outer bound - a tighter band is a training-time knob, not a file filter. Applies to non-handicap games only.".format(DEFAULT_KOMI_MAX))  # noqa: E501
-    p.add_argument("--handicap-komi-min", type=float, default=DEFAULT_HANDICAP_KOMI_MIN, help="Sanity bound for games WITH handicap stones, whose komi is compensation at ~13pts/stone rather than a free parameter. Default: {}".format(DEFAULT_HANDICAP_KOMI_MIN))  # noqa: E501
-    p.add_argument("--handicap-komi-max", type=float, default=DEFAULT_HANDICAP_KOMI_MAX, help="Default: {}".format(DEFAULT_HANDICAP_KOMI_MAX))  # noqa: E501
-    p.add_argument("--allow-no-komi", action="store_true", help="Keep games with no parseable KM. Off by default: komi is not a feature plane, so an unknown komi is an unknown offset.")  # noqa: E501
-    p.add_argument("--limit", type=int, default=None, help="Stop once this many files have been kept - use to build a fixed-size training set")  # noqa: E501
-    p.set_defaults(func=cmd_select)
-
     args = parser.parse_args(cmd_line_args)
-    if getattr(args, "include_gtype", None) is None:
-        args.include_gtype = list(DEFAULT_INCLUDE_GTYPES)
     args.func(args)
 
 

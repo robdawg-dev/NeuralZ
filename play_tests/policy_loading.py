@@ -117,6 +117,12 @@ MODEL_SPECS = {
         "weights": "weights.00074.weights.h5",
         "legacy": False,
     },
+    "b15c192latest": {
+            # Latest and greatest
+            "json": "model_restower_b15c192_convnorm.json",
+            "weights": "weights.00094.weights.h5",
+            "legacy": False,
+    },
     "2016net": {
         # Converted from the original legacy Keras 2.0.4 format by
         # convert_2016net.py - the untouched originals live in Data/Mamifreak/.

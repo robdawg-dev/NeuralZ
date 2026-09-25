@@ -34,3 +34,4 @@ AlphaGo/tmp_data
 # sgf_preparation / game_converter_katago_data. Regenerable from the source SGFs, and
 # large (a manifest is ~46MB per 60k files; shards run to hundreds of GB).
 workspace/
+game_data/

@@ -1,10 +1,9 @@
-"""Tests for the two-phase SGF corpus preparation tool.
+"""Tests for the SGF corpus scanner.
 
-The contract that matters: `scan` reads the corpus exactly once and records facts; `select`
-applies policy and can be re-run freely. Anything that makes a policy decision at scan
-time, or that makes `select` need the original SGFs, breaks the reason the tool is split
-in two - conversion is a 60+ hour job on a real corpus, so re-deriving anything from the
-files is the expensive path.
+The contract that matters: `scan` reads the corpus exactly once, records facts about every
+file it walks, and never modifies, deletes or filters anything. Selection lives in
+select_games.py and works from the manifest alone, so a criterion can change without
+re-reading a corpus that takes hours to scan.
 """
 import gzip
 import json
@@ -114,7 +113,7 @@ def test_scan_writes_one_row_per_file_and_never_touches_the_corpus(tmp_path):
 
 def test_scan_records_rejections_as_advisory_without_acting_on_them(tmp_path):
     """The whole point of the split: scan must not drop anything. A 9x9 game and a
-    hintpos game both belong in the manifest, flagged, so select can change its mind
+    hintpos game both belong in the manifest, flagged, so selection can change its mind
     without a re-scan."""
     src = _corpus(tmp_path, **{
         "ok.sgf": ANNOTATED,
@@ -196,115 +195,3 @@ def test_no_move_stats_skips_only_the_per_move_aggregates(tmp_path):
     a, b = _rows(full)[0], _rows(fast)[0]
     assert a["n_moves"] == b["n_moves"] == 4          # header facts still present
     assert "n_blunder_gt10" in a and "n_blunder_gt10" not in b
-
-
-# ---------------------------------------------------------------------------
-# select
-# ---------------------------------------------------------------------------
-
-def _select(tmp_path, rows, *extra):
-    manifest = tmp_path / "m.jsonl"
-    with open(str(manifest), "w") as f:
-        for r in rows:
-            f.write(json.dumps(r) + "\n")
-    keep = tmp_path / "keep.txt"
-    prep.main(["select", str(manifest), str(keep)] + list(extra))
-    with open(str(keep)) as f:
-        return [line.strip() for line in f if line.strip()]
-
-
-def _row(**over):
-    base = {"path": "x.sgf", "sgf_ok": True, "size": "19", "gtype": "normal",
-            "komi": "7.5", "n_moves": 300, "n_moveless_nodes": 0, "n_ab": 0, "n_aw": 0,
-            "n_annotated": 300, "n_weighted": 300, "n_blunder_gt10": 0}
-    base.update(over)
-    return base
-
-
-@pytest.mark.parametrize("over,kept", [
-    ({}, True),
-    ({"size": "9"}, False),
-    ({"gtype": "hintpos"}, False),
-    ({"gtype": "hintfork"}, False),
-    ({"gtype": "cleanuptraining"}, False),
-    ({"gtype": "handicap"}, True),    # kept: its setup stones are genuine placements
-    ({"gtype": "asym"}, False),       # asymmetric playouts - weakened side
-    ({"gtype": "sgfpos"}, False),     # AB block is a serialized board, not a move order
-    ({"gtype": "fork"}, False),
-    ({"gtype": None}, False),         # allowlist fails safe on an unknown gtype
-    ({"komi": "-40"}, False),
-    ({"komi": "200"}, False),
-    ({"komi": None}, False),
-    ({"n_moves": 0}, False),
-    ({"sgf_ok": False}, False),
-    # moveless nodes are NOT a reason to reject the file. sgf_iter_states now skips
-    # annotation-only nodes cleanly and raises only on board-altering ones, so the
-    # converter handles both correctly. Rejecting here would discard every KataGo rating
-    # game (89/90 carry a terminal result comment) for no benefit.
-    ({"n_moveless_nodes": 3}, True),
-])
-def test_select_default_criteria(tmp_path, over, kept):
-    rows = [_row(path="keepme.sgf", **over)]
-    assert (_select(tmp_path, rows) == ["keepme.sgf"]) is kept
-
-
-def test_select_does_not_filter_on_setup_stones_or_blunder_counts(tmp_path):
-    """Both were removed. Setup stones are meaningful only for gtypes the allowlist
-    already drops, and game-level blunder counts are superseded by the converter's
-    position-level --max-winrate-loss."""
-    rows = [_row(path="a.sgf", n_ab=5, n_aw=0, n_blunder_gt10=9)]
-    assert _select(tmp_path, rows) == ["a.sgf"]
-
-
-def test_select_komi_band_is_configurable(tmp_path):
-    rows = [_row(path="a.sgf", komi="20")]
-    assert _select(tmp_path, rows) == ["a.sgf"]                       # generous default
-    assert _select(tmp_path, rows, "--komi-max", "16") == []
-
-
-def test_komi_band_does_not_apply_to_handicap_games(tmp_path):
-    """KataGo expresses handicap as komi compensation at ~13 pts/stone, so a 5-stone game
-    sits near komi 53. Judging that by the even-board band discarded ~50% of handicap
-    games - the data most wanted for play against handicap opponents."""
-    hcap = [_row(path="h.sgf", komi="53.5", handicap="5", n_ab=4)]
-    even = [_row(path="e.sgf", komi="53.5", handicap="0")]
-    assert _select(tmp_path, hcap) == ["h.sgf"], "handicap komi must not hit the band"
-    assert _select(tmp_path, even) == [], "even-board komi 53.5 is still out of range"
-    # tightening the band must still leave handicap games alone
-    assert _select(tmp_path, hcap, "--komi-max", "8") == ["h.sgf"]
-
-
-def test_handicap_games_still_get_a_sanity_bound(tmp_path):
-    """Loose, but not unbounded - the raw corpus holds komi of -303 and +359."""
-    assert _select(tmp_path, [_row(path="h.sgf", komi="200.5", handicap="5")]) == []
-    assert _select(tmp_path, [_row(path="h.sgf", komi="115.5", handicap="9")]) == ["h.sgf"]
-    assert _select(tmp_path, [_row(path="h.sgf", komi="200.5", handicap="5"),
-                              _row(path="i.sgf", komi="115.5", handicap="9")],
-                   "--handicap-komi-max", "250") == ["h.sgf", "i.sgf"]
-
-
-
-def test_allow_no_komi_opt_out(tmp_path):
-    rows = [_row(path="a.sgf", komi=None)]
-    assert _select(tmp_path, rows) == []
-    assert _select(tmp_path, rows, "--allow-no-komi") == ["a.sgf"]
-
-
-def test_select_limit_stops_early(tmp_path):
-    rows = [_row(path="f{}.sgf".format(i)) for i in range(50)]
-    assert len(_select(tmp_path, rows, "--limit", "7")) == 7
-
-
-def test_select_is_repeatable_from_the_manifest_alone(tmp_path):
-    """No SGF is read during select. This is what makes re-tuning criteria cheap, so it
-    is worth pinning: the manifest must be self-sufficient."""
-    rows = [_row(path="/nonexistent/never/created.sgf")]
-    assert _select(tmp_path, rows) == ["/nonexistent/never/created.sgf"]
-
-
-def test_gtype_allowlist_keeps_only_normal_and_handicap(tmp_path):
-    rows = [_row(path="n.sgf", gtype="normal"), _row(path="h.sgf", gtype="handicap"),
-            _row(path="s.sgf", gtype="sgfpos"), _row(path="a.sgf", gtype="asym"),
-            _row(path="f.sgf", gtype="fork"), _row(path="x.sgf", gtype="brand_new_type")]
-    assert _select(tmp_path, rows) == ["n.sgf", "h.sgf"]
-    assert _select(tmp_path, rows, "--include-gtype", "sgfpos") == ["s.sgf"]
