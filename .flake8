@@ -1,0 +1,9 @@
+[flake8]
+max-line-length = 100
+exclude = .git,.venv,build,deprecated,__pycache__
+# These set CUDA_VISIBLE_DEVICES before anything imports TensorFlow, so their imports
+# deliberately come after code.
+per-file-ignores =
+    run_gtp_player.py: E402
+    tests/test_lr_override.py: E402
+    tests/test_optimizer_state.py: E402

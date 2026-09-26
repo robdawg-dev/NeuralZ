@@ -159,8 +159,8 @@ def main():
 
         sgf_filename = "game{:02d}_black-{}_white-{}.sgf".format(i + 1, black_name, white_name)
         save_gamestate_to_sgf(state, run_dir, sgf_filename,
-                             black_player_name=black_name, white_player_name=white_name,
-                             size=board_size, komi=args.komi)
+                              black_player_name=black_name, white_player_name=white_name,
+                              size=board_size, komi=args.komi)
 
         print("  {} moves ({}), score={:+.1f}, winner={} (playing {})".format(
             n_moves, "ended naturally" if ended_naturally else "hit move cap",

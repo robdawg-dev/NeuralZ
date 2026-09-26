@@ -119,7 +119,8 @@ def select(args):
         "handicap share    : {:.2%} of estimated positions".format(
             handicap_pos / max(normal_pos + handicap_pos, 1)),
         "",
-        "{:<8}{:>10}{:>12}{:>16}{:>12}".format("split", "games", "handicap", "~positions", "hcap pos"),
+        "{:<8}{:>10}{:>12}{:>16}{:>12}".format(
+            "split", "games", "handicap", "~positions", "hcap pos"),
     ]
     for name, games in splits.items():
         rng.shuffle(games)

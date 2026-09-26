@@ -20,7 +20,8 @@ from keras import mixed_precision, ops, utils as keras_utils  # noqa: E402
 from keras.metrics import TopKCategoricalAccuracy  # noqa: E402
 from keras.optimizers import SGD  # noqa: E402
 from keras.optimizers.schedules import CosineDecay, LearningRateSchedule  # noqa: E402
-from keras.callbacks import ModelCheckpoint, Callback, ReduceLROnPlateau, TerminateOnNaN  # noqa: E402
+from keras.callbacks import (  # noqa: E402
+    ModelCheckpoint, Callback, ReduceLROnPlateau, TerminateOnNaN)
 from AlphaGo.models.policy import CNNPolicy  # noqa: E402
 # Unused directly, but importing it registers ResTowerPolicy (via the @neuralnet
 # decorator) so CNNPolicy.load_model() can find it by name in a model.json's "class"
@@ -64,13 +65,14 @@ def sanity_checked_generator(base_generator, out_directory, label, check_every=5
             x_nan = int(np.isnan(X).sum())
             x_min, x_max = float(X.min()), float(X.max())
             y_min, y_max = float(row_sums.min()), float(row_sums.max())
-            bad = x_nan > 0 or x_min < -1e-3 or x_max > 1 + 1e-3 or abs(y_min - 1.0) > 1e-3 or abs(y_max - 1.0) > 1e-3
+            bad = (x_nan > 0 or x_min < -1e-3 or x_max > 1 + 1e-3
+                   or abs(y_min - 1.0) > 1e-3 or abs(y_max - 1.0) > 1e-3)
             if bad:
                 print("\n*** BAD BATCH detected: {} step {}: X in [{:.4f}, {:.4f}] "
                       "({} NaN), Y row-sums in [{:.4f}, {:.4f}] (should be exactly 1.0) "
                       "***".format(label, step, x_min, x_max, x_nan, y_min, y_max))
                 entry = {"label": label, "step": step, "X_min": x_min, "X_max": x_max,
-                        "X_nan_count": x_nan, "Y_row_sum_min": y_min, "Y_row_sum_max": y_max}
+                         "X_nan_count": x_nan, "Y_row_sum_min": y_min, "Y_row_sum_max": y_max}
                 existing = []
                 if os.path.exists(log_path):
                     with open(log_path) as f:
@@ -299,8 +301,8 @@ class RangeTestDiagnosticsCallback(Callback):
             loss_scale = logs.get("loss_scale") if logs else None
             loss_scale = float(loss_scale) if loss_scale is not None else None
             record = {"step": self._step, "lr": lr, "loss": loss,
-                     "weight_norm": weight_norm, "grad_norm": grad_norm,
-                     "loss_scale": loss_scale}
+                      "weight_norm": weight_norm, "grad_norm": grad_norm,
+                      "loss_scale": loss_scale}
             self._f.write(json.dumps(record) + "\n")
             self._f.flush()
         self._step += 1
@@ -616,8 +618,8 @@ def run_training(cmd_line_args=None):
 
     # Must be set before the model is constructed - controls the actual random draw
     # used for weight initialization. Without this, --seed only ever controlled the
-    # data stream (symmetry choice) - weight init drew from Keras's own global RNG regardless of --seed,
-    # silently breaking the "same --seed -> same run" assumption for anything
+    # data stream (symmetry choice) - weight init drew from Keras's own global RNG
+    # regardless of --seed, silently breaking the "same --seed -> same run" assumption for anything
     # sensitive to initial weights.
     if args.seed is not None:
         keras_utils.set_random_seed(args.seed)
@@ -782,7 +784,6 @@ def run_training(cmd_line_args=None):
     import gc
     gc.collect()
 
-
     warmup_cb = None
     plateau_cb = None
     plateau_state_restorer = None
@@ -804,7 +805,7 @@ def run_training(cmd_line_args=None):
             args.range_ceiling_lr, total_steps)
         if args.verbose:
             print("LR range test: warmup {} -> {} over {} steps, then exponential sweep "
-                 "{} -> {} over the remaining {} steps".format(
+                  "{} -> {} over the remaining {} steps".format(
                      args.range_warmup_start_lr, args.range_floor_lr, range_warmup_steps,
                      args.range_floor_lr, args.range_ceiling_lr,
                      max(1, total_steps - range_warmup_steps)))

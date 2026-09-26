@@ -23,5 +23,10 @@ gtp = [
 
 [dependency-groups]
 dev = [
+    "cython-lint>=0.21.1",
+    "flake8>=7.4.1",
     "pytest>=9.1.1",
 ]
+
+[tool.cython-lint]
+max-line-length = 100

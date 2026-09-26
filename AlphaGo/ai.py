@@ -46,7 +46,7 @@ class ProbabilisticPolicyPlayer(object):
 
     def __init__(self, policy_function, temperature=1.0, pass_when_offered=False,
                  move_limit=None, greedy_start=None, top_k=None, top_k_responding=None):
-        assert(temperature > 0.0)
+        assert temperature > 0.0
         self.policy = policy_function
         self.move_limit = move_limit
         self.beta = 1.0 / temperature

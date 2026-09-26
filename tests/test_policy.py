@@ -102,7 +102,7 @@ class TestResnetPolicy(unittest.TestCase):
             self.assertTrue(np.all(w1 == w2))
 
         # check that save/load keeps the ResnetPolicy class
-        self.assertTrue(type(policy) == type(copypolicy))
+        self.assertIs(type(policy), type(copypolicy))
 
         os.remove(model_file)
         os.remove(weights_file)

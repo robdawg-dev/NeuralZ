@@ -64,6 +64,7 @@ _RE_MOVE_ANNOT = re.compile(
     r"(?:C\[\s*(-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) v=(\d+)"
     r"(?: rv=(\d+))?(?: weight=([\d.]+))?[^\]]*\])?")
 
+
 def _percentile(sorted_values, q):
     if not sorted_values:
         return None

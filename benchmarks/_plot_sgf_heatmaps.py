@@ -12,7 +12,7 @@ the container if you'd rather match the training scripts:
     uv run python -m benchmarks._plot_sgf_heatmaps \\
         play_tests/models/b15c192/model_restower_b15c192_convnorm.json \\
         play_tests/models/b15c192/weights.00074.weights.h5 \\
-        "play_tests/sgf/match_b15c192_vs_b10c128mb1024_20260919_173338/game01_black-b15c192_white-b10c128mb1024.sgf" \\
+        play_tests/sgf/<match_dir>/<game>.sgf \\
         benchmarks/_heatmaps_some_game
 
 --model/--weights load separately (not a single combined file) because every checkpoint
@@ -77,7 +77,8 @@ def main():
     parser.add_argument("model", help="Path to a model JSON file (from CNNPolicy.save_model())")
     parser.add_argument("weights", help="Path to a .weights.h5 checkpoint to load onto that model")
     parser.add_argument("sgf", help="Path to the SGF file to visualize")
-    parser.add_argument("out_directory", help="Directory to save heatmap PNGs into (created if missing)")
+    parser.add_argument("out_directory",
+                        help="Directory to save heatmap PNGs into (created if missing)")
     parser.add_argument("--skip-final", action="store_true",
                         help="Skip the final (game-end, no next move to predict) position "
                              "that sgf_iter_states otherwise includes by default")

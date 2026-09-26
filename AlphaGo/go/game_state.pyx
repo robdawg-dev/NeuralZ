@@ -47,53 +47,6 @@ cdef class GameState:
     #                                                                          #
     ############################################################################
 
-    """
-    # Dimensions of one side of the board and total number of squares, respectively
-    cdef short size, board_size
-
-    # Possible ko location
-    cdef location_t ko
-
-    # Unordered list of all groups of stones
-    cdef group_set_t groups_set
-
-    # Lookup of a group from board location. Length is board size + 1 to include border
-    cdef board_group_t board
-
-    # Current player and opponent, either WHITE or BLACK
-    cdef stone_t current_player, opponent_player
-
-    # Amount of black stones captured by white, and vice versa
-    cdef short capture_black, capture_white
-
-    # Amount of passes by black and by white, respectively
-    cdef short passes_black, passes_white
-
-    # List with move history
-    cdef vector[location_t] moves_history
-
-    # Number of SETUP stones placed before play began, of either colour (SGF AB and AW).
-    # Marks the boundary of the setup block in moves_history.
-    cdef short num_handicap
-
-    # Of those, how many were placed by BLACK - the genuine handicap stones.
-    cdef short num_black_handicap
-
-    # List with legal moves
-    cdef vector[location_t] legal_moves
-
-    # Neighbors lookup tables
-    cdef pattern_t* neighbor
-    cdef pattern_t* neighbor3x3
-
-    # Zobrist hashing
-    cdef zobrist_hash_t zobrist_current
-    cdef vector[zobrist_hash_t] ptr_zobrist_lookup
-
-    cdef bool enforce_superko
-    cdef set previous_hashes
-    """
-
     ############################################################################
     #   init functions                                                         #
     #                                                                          #
@@ -245,7 +198,7 @@ cdef class GameState:
            to a previously seen state. Move must otherwise be legal.
         """
 
-        cdef int i, first
+        cdef int first
         cdef bool played = False
 
         # Part 1: quickly check that the current player has ever played at this location; if not, no
@@ -395,7 +348,7 @@ cdef class GameState:
                 return False
         return True
 
-    cdef bool is_true_eye(self, location_t location, stone_t owner, list stack=[]):
+    cdef bool is_true_eye(self, location_t location, stone_t owner, list stack=None):
         """Check if location is a 'real' eye; this goes beyond checking if a location is 'eyeish' by
            checking that corners have the same owner or are themselves eyes, recursively. A group
            with two "true eyes" cannot be captured.
@@ -405,6 +358,9 @@ cdef class GameState:
         cdef stone_t board_value
         cdef short max_bad_diagonal, count_bad_diagonal = 0
         cdef location_t neighbor_loc
+
+        if stack is None:
+            stack = []
 
         # First, check that location is at least 'eyeish'
         if not self.is_eyeish(location, owner):
@@ -666,7 +622,6 @@ cdef class GameState:
         """
 
         cdef location_t x, y, location
-        cdef group_ptr_t grp
 
         # Note: as per the python interface, 'None' is considerd a pass
         if action is None:
@@ -766,7 +721,7 @@ cdef class GameState:
 
         cdef location_t loc, neighbor_loc
         cdef group_ptr_t group
-        cdef group_t val, neighbor_value
+        cdef group_t val
         cdef int i
 
         # First pass: clear stones by setting board[loc] to EMPTY for each stone in this group.
@@ -853,8 +808,8 @@ cdef class GameState:
                 print("\t", calculate_tuple_location(loc, self.size), val)
 
     cpdef bool sanity_check_groups(self):
-        """Debugging helper: loops over every location and group on the board and checks that they are
-           self-consistent.
+        """Debugging helper: loops over every location and group on the board and checks that they
+           are self-consistent.
         """
 
         cdef location_t loc, neighbor_loc
@@ -1147,7 +1102,7 @@ cdef class TemporaryMove:
         cdef group_ptr_t old_group, neighbor_group
         cdef location_t loc, neighbor_loc
         cdef group_t val
-        cdef int i, c
+        cdef int i
 
         # Take away current hash from set of hashes.
         self.state.previous_hashes.discard(self.state.zobrist_current)

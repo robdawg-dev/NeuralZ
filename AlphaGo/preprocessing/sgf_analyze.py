@@ -455,8 +455,8 @@ def report(agg, elapsed, deep):
     print("\nPER-MOVE SEARCH METADATA")
     print("    moves with a v=/winrate annotation : {:,} ({:.2f}% of moves)".format(
         t["annotated"], _pct(t["annotated"], t["moves"])))
-    print("    ...of those, carrying weight=      : {:,} ({:.2f}%)  [absent in rating games]".format(
-        t["weighted"], _pct(t["weighted"], t["annotated"])))
+    print("    ...of those, carrying weight=      : {:,} ({:.2f}%)  [absent in rating games]"
+          .format(t["weighted"], _pct(t["weighted"], t["annotated"])))
     print("    post-game reanalysed (rv=)       : {:,} ({:.2f}% of annotated)".format(
         t["reanalyzed"], _pct(t["reanalyzed"], t["annotated"])))
     print("    weight == 0 (KataGo discards)      : {:,} ({:.2f}% of weighted)".format(

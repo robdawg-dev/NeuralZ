@@ -49,7 +49,8 @@ def test_file_matches_current_is_noop(tmp_path):
 
 def test_within_tolerance_is_noop(tmp_path):
     model = make_model(lr=0.4)
-    (tmp_path / "lr_override.txt").write_text("0.4000001")  # differs by 1e-7, under the 1e-6 tolerance
+    # differs by 1e-7, under the 1e-6 tolerance
+    (tmp_path / "lr_override.txt").write_text("0.4000001")
     cb = trainer.LROverrideCallback(tmp_path)
     cb.set_model(model)
     cb.on_epoch_end(0)
@@ -153,5 +154,5 @@ def test_integration_real_fit_with_plateau_and_override(tmp_path):
     plateau_cb = ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=1, verbose=0)
     override_cb = trainer.LROverrideCallback(tmp_path)
     model.fit(x, y, validation_data=(x_val, y_val), epochs=2, verbose=0,
-             callbacks=[plateau_cb, override_cb])
+              callbacks=[plateau_cb, override_cb])
     assert abs(float(model.optimizer.learning_rate) - 0.33) < 1e-6

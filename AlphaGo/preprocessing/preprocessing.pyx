@@ -254,7 +254,6 @@ cdef class Preprocess:
            results in capturing an opponent group.
         """
 
-        cdef vector[location_t] captures = vector[location_t]()
         cdef location_t location
         cdef group_ptr_t group
 
@@ -273,7 +272,6 @@ cdef class Preprocess:
            current player ultimately escaping.
         """
 
-        cdef vector[location_t] escapes = vector[location_t]()
         cdef location_t location
         cdef group_ptr_t group
 
@@ -323,7 +321,6 @@ cdef class Preprocess:
         # TODO - pass additional args to feature processors, redirect this function to
         # get_ladder_escapes with less depth.
 
-        cdef vector[location_t] escapes = vector[location_t]()
         cdef location_t location
         cdef group_ptr_t group
 
@@ -521,7 +518,6 @@ cdef class Preprocess:
         (1, size, size, n_features) - channels_last, as expected by the network.
         """
 
-        cdef int i
         cdef preprocess_method proc
         cdef np.ndarray[lookahead_t, ndim=2] groups_after
 
@@ -591,7 +587,8 @@ cdef np.ndarray[lookahead_t, ndim=2] get_groups_after(GameState state):
     return result
 
 
-cdef void get_groups_after_at(GameState state, location_t loc, np.ndarray[lookahead_t, ndim=2] result):
+cdef void get_groups_after_at(GameState state, location_t loc,
+                              np.ndarray[lookahead_t, ndim=2] result):
     """Compute 'groups_after' results at a single location, which must be a legal move, writing
        directly into result[loc, :] (see the .pxd docstring for why this doesn't allocate and
        return a fresh array - it runs once per legal move).

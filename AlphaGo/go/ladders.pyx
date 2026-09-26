@@ -161,8 +161,8 @@ cdef set get_adjacent_captures(group_ptr_t group, board_group_t &board, pattern_
     # 'and are in atari (hence could be captured by playing at the given location)
     cdef set atari_liberties = set()
     cdef group_ptr_t neighbor_group
-    cdef location_t loc, opp_loc, neighbor_loc
-    cdef group_t val, opp_val
+    cdef location_t loc, neighbor_loc
+    cdef group_t val
     cdef stone_t owner = d(group).color
     cdef int i
 

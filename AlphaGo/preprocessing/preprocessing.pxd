@@ -221,7 +221,8 @@ cdef np.ndarray[lookahead_t, ndim=2] get_groups_after(GameState state)
    - groups_after[loc, 2] = number of stones captured by playing at loc
 """
 
-cdef void get_groups_after_at(GameState state, location_t loc, np.ndarray[lookahead_t, ndim=2] result)
+cdef void get_groups_after_at(GameState state, location_t loc,
+                              np.ndarray[lookahead_t, ndim=2] result)
 """Compute 'groups_after' results at a single location, which must be a legal move, writing
    directly into result[loc, :] rather than allocating and returning a new (3,) array - this
    runs once per legal move (commonly ~200-300 times per real move played), so avoiding a

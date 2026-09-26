@@ -95,8 +95,8 @@ class ResTowerPolicy(CNNPolicy):
         # standard practice for deep ReLU stacks - BatchNorm reduces but doesn't eliminate
         # the value of variance-scaled init at this depth (15-20 blocks x 2 convs each).
         x = Conv2D(filters, params["stem_filter_width"], padding="same",
-                  kernel_initializer="he_normal", use_bias=True,
-                  data_format="channels_last")(model_input)
+                   kernel_initializer="he_normal", use_bias=True,
+                   data_format="channels_last")(model_input)
         x = BatchNormalization()(x)
         x = Activation("relu")(x)
 
@@ -104,28 +104,28 @@ class ResTowerPolicy(CNNPolicy):
         for _ in range(params["num_blocks"]):
             block_input = x
             x = Conv2D(filters, params["block_filter_width"], padding="same",
-                      kernel_initializer="he_normal", use_bias=True,
-                      data_format="channels_last")(x)
+                       kernel_initializer="he_normal", use_bias=True,
+                       data_format="channels_last")(x)
             x = BatchNormalization()(x)
             x = Activation("relu")(x)
             x = Conv2D(filters, params["block_filter_width"], padding="same",
-                      kernel_initializer="he_normal", use_bias=True,
-                      data_format="channels_last")(x)
+                       kernel_initializer="he_normal", use_bias=True,
+                       data_format="channels_last")(x)
             x = BatchNormalization()(x)
             x = add([block_input, x])
             x = Activation("relu")(x)
 
         if params["head"] == "dense":
             x = Conv2D(2, 1, padding="same", kernel_initializer="uniform",
-                      use_bias=True, data_format="channels_last")(x)
+                       use_bias=True, data_format="channels_last")(x)
             x = BatchNormalization()(x)
             x = Activation("relu")(x)
             x = Flatten()(x)
             x = Dense(board * board, kernel_initializer="uniform")(x)
         elif params["head"] == "conv_norm":
             x = Conv2D(params["head_channels"], 1, padding="same",
-                      kernel_initializer="he_normal", use_bias=True,
-                      data_format="channels_last")(x)
+                       kernel_initializer="he_normal", use_bias=True,
+                       data_format="channels_last")(x)
             x = BatchNormalization()(x)
             x = Activation("relu")(x)
             # scale=0.6 -> He-normal (scale=2.0) with 0.3x the usual variance, so this
@@ -133,14 +133,14 @@ class ResTowerPolicy(CNNPolicy):
             # instead of the same init scale as every other layer - see the head='conv_norm'
             # docstring above for why.
             x = Conv2D(1, 1, padding="same",
-                      kernel_initializer=VarianceScaling(
-                          scale=0.6, mode="fan_in", distribution="truncated_normal"),
-                      use_bias=True, data_format="channels_last")(x)
+                       kernel_initializer=VarianceScaling(
+                           scale=0.6, mode="fan_in", distribution="truncated_normal"),
+                       use_bias=True, data_format="channels_last")(x)
             x = Flatten()(x)
             x = Bias()(x)
         else:
             x = Conv2D(1, 1, padding="same", kernel_initializer="uniform",
-                      use_bias=True, data_format="channels_last")(x)
+                       use_bias=True, data_format="channels_last")(x)
             x = Flatten()(x)
             x = Bias()(x)
 

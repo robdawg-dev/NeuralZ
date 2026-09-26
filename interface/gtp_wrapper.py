@@ -21,6 +21,7 @@ def _log_gtp_command(cmd):
     except OSError:
         pass  # never let logging itself take down the bot
 
+
 # The gtp package's own BLACK/WHITE constants (1/-1) don't match this engine's
 # BLACK/WHITE values, so GTP-supplied colors must be translated before they reach
 # GameState.do_move()/set_current_player().
@@ -172,7 +173,7 @@ def run_gtp(player_obj, inpt_fn=None, name="Gtp Player", version="0.0"):
         # or multiple commands separated by '\n'
         cmd_list = inpt.split("\n")
         for cmd in cmd_list:
-            #_log_gtp_command(cmd)
+            # _log_gtp_command(cmd)
             engine_reply = gtp_engine.send(cmd)
             sys.stdout.write(engine_reply)
             sys.stdout.flush()

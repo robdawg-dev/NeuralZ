@@ -67,8 +67,8 @@ def main():
     os.makedirs(SGF_DIR, exist_ok=True)
     filename = "{}_{}moves_{}.sgf".format(args.model, n_moves, time.strftime("%Y%m%d_%H%M%S"))
     save_gamestate_to_sgf(state, SGF_DIR, filename,
-                         black_player_name=args.model, white_player_name=args.model,
-                         size=board_size)
+                          black_player_name=args.model, white_player_name=args.model,
+                          size=board_size)
     print("Saved to {}".format(os.path.join(SGF_DIR, filename)))
 
 

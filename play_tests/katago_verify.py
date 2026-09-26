@@ -19,7 +19,7 @@ being evaluated for commodity-CPU feasibility here, it's just the reference
 oracle, so there's no reason to hold it to that constraint.
 
 Run natively via uv, from the repo root:
-    uv run python play_tests/katago_verify.py play_tests/sgf/match_simplecnn_vs_resnet_20260908_193218
+    uv run python play_tests/katago_verify.py play_tests/sgf/<match_dir>
 """
 import argparse
 import json

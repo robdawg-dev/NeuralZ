@@ -171,4 +171,5 @@ def test_shard_size_is_independent_of_bucket_size(tmp_path):
     shards_many, data_many = _load(os.path.join(many, "train"))
     assert len(shards_many) < len(shards_one), "grouping did not reduce the file count"
     for key in ("game_id", "move", "actions", "states"):
-        assert np.array_equal(data_one[key], data_many[key]),             "{} differs: grouping changed the position order".format(key)
+        assert np.array_equal(data_one[key], data_many[key]), (
+            "{} differs: grouping changed the position order".format(key))

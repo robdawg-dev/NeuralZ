@@ -11,7 +11,8 @@ import AlphaGo.models.resnet_tower_policy  # noqa: F401 (registers CNNPolicy + R
 from interface.gtp_wrapper import run_gtp
 from AlphaGo.ai import ProbabilisticPolicyPlayer
 
-parser = argparse.ArgumentParser(description='Run a trained policy network as a GTP bot (CPU-only).')
+parser = argparse.ArgumentParser(
+    description='Run a trained policy network as a GTP bot (CPU-only).')
 parser.add_argument("model", help="Path to a JSON model file (from CNNPolicy.save_model())")
 parser.add_argument("weights", help="Path to a .weights.h5 weights file matching model")
 # Same defaults as play_tests/match_networks.py, so a GTP game plays like our playoffs.
@@ -60,4 +61,3 @@ player = ProbabilisticPolicyPlayer(
     move_limit=args.max_moves, greedy_start=args.greedy_start,
     top_k=args.top_k, top_k_responding=args.top_k_responding)
 run_gtp(player, name='NeuralZ', version=args.version)
-
