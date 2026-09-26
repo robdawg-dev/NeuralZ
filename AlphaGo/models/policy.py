@@ -21,7 +21,7 @@ class CNNPolicy(NeuralNetBase):
         # get network activations at legal move locations
         distribution = nn_output[move_indices]
         distribution = distribution / distribution.sum()
-        # list(), not a bare zip: callers (e.g. AlphaGo/mcts.py) call len() on this and
+        # list(), not a bare zip: callers (e.g. AlphaGo/ai.py) call len() on this and
         # may iterate it more than once, neither of which a Python 3 zip iterator supports.
         return list(zip(moves, distribution))
 

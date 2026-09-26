@@ -297,8 +297,6 @@ imply.
   throughput or a retrain from scratch. Currently left alone.
 - **A fair comparison between networks.** The only sound way is to evaluate both on the
   same held-out positions, e.g. this set's `test/` split, which neither was trained on.
-- **Search at play time.** The bot is a raw policy net with no search. Even shallow MCTS is
-  usually worth more than any data filter here.
 - **Two-pass endings.** `run_gtp_player.py` records 0 of 50 matches reaching a clean
   two-pass end, leaving dead stones uncaptured. A play-path problem, not a data one.
 - **Bit-packed planes end to end.** The GPU needs floats only at the first convolution.
