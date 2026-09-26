@@ -35,3 +35,8 @@ AlphaGo/tmp_data
 # large (a manifest is ~46MB per 60k files; shards run to hundreds of GB).
 workspace/
 game_data/
+# Local outputs: training runs (weights, metadata, optimizer state) and play-test
+# models/games. Large and machine-specific.
+benchmarks/_*/
+play_tests/models/
+play_tests/sgf/
