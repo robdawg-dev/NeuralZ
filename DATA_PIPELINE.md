@@ -22,7 +22,7 @@ select_games.py            ->  train.txt val.txt test.txt    which games, and wh
 
 convert_shuffled.py        ->  train/ val/ test/ shard_NNNNN.h5    feature planes
 
-supervised_policy_trainer_v4.py                      streams the shards
+supervised_policy_trainer.py                         streams the shards
 ```
 
 Each stage decides one thing and nothing else. Selection is entirely in `select_games.py`;
@@ -196,11 +196,12 @@ where the file boundaries fall changes. The 40M set below predates this and was 
 
 ## Training
 
-`supervised_policy_trainer_v4.py` is `v3` with only the data layer replaced: it reads
-through `shard_stream.py` instead of v3's shuffle buffer. It streams the shards start to
-finish, wrapping at the end, with **no shuffle buffer**, no game index and no split logic.
-Each position gets a random symmetry, chosen as a function of (seed, position in the
-stream), so a resumed run continues exactly where an uninterrupted one would have been.
+`supervised_policy_trainer.py` (formerly `_v4`) is `v3` with only the data layer
+replaced: it reads through `shard_stream.py` instead of v3's shuffle buffer. It streams the
+shards start to finish, wrapping at the end, with **no shuffle buffer**, no game index and
+no split logic. Each position gets a random symmetry, chosen as a function of (seed,
+position in the stream), so a resumed run continues exactly where an uninterrupted one
+would have been.
 
 Every pass sees the same order. If varying it between passes ever matters, reintroduce a
 small shuffle over shard order rather than a position buffer.

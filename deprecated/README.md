@@ -35,7 +35,9 @@ The pipeline before `convert_shuffled.py`. Superseded by the one described in
 | `game_converter.py` | `AlphaGo/preprocessing/convert_shuffled.py` |
 | `game_converter_parallel.py` | `AlphaGo/preprocessing/convert_shuffled.py` |
 | `shuffle_buffer.py` | `AlphaGo/training/shard_stream.py` |
-| `supervised_policy_trainer_v3.py` | `AlphaGo/training/supervised_policy_trainer_v4.py` |
+| `supervised_policy_trainer_v3.py` | v4: `AlphaGo/training/supervised_policy_trainer.py` |
+| `supervised_policy_trainer_debug.py` | nothing - see below |
+| `lr_testing_trainer.py` | v4's `--lr-range-test` |
 
 The converters wrote each game as a contiguous block of rows, with a `file_offsets` group
 mapping every SGF to its `(start, length)`. `shuffle_buffer.py` used those offsets to split
@@ -49,4 +51,19 @@ of each other were changed to plain module names (`shuffle_buffer`, `game_conver
 imports of live `AlphaGo` modules were left as they were, so run them from inside this
 directory with the repository root on `PYTHONPATH`. Nothing else was changed.
 
-v3's training callbacks were carried into v4 unchanged.
+v3's training callbacks were carried into v4 unchanged. "v4" throughout is the current
+`AlphaGo/training/supervised_policy_trainer.py`, which was `supervised_policy_trainer_v4.py`
+when these files were deprecated.
+
+The two side-branch trainers:
+
+- `supervised_policy_trainer_debug.py` is an instrumented variant built to investigate the
+  intermittent validation collapse (val_loss ~3 -> ~11-12) and gradient-explosion NaNs.
+  Its diagnostics were never ported to v4: `CollapseDiagnosticCallback`,
+  `SyncBeforeValidationCallback` (`--sync-before-validation`),
+  `GradientExplosionDiagnosticCallback`, `--no-jit`, `--global-clip-norm` and
+  `--lr-schedule-epochs`. None of them depend on the data layer, so they can be lifted
+  into v4 if that investigation is reopened.
+- `lr_testing_trainer.py` found the LR ceiling with an uncapped warmup ramp that stopped
+  once weight_norm passed a multiple of its starting value. v4's `--lr-range-test`
+  replaced it and deliberately drops that auto-stop, which gave misleading verdicts.

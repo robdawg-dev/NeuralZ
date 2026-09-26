@@ -487,11 +487,11 @@ class MetadataWriterCallback(Callback):
             json.dump(self.metadata, f, indent=2)
 
 
-def run_training_v2(cmd_line_args=None):
+def run_training(cmd_line_args=None):
     """Run training. command-line args may be passed in as a list
 
-    Tuned large-batch recipe. Differences from the original RocAlphaGo trainer
-    (supervised_policy_trainer.py, since removed):
+    Tuned large-batch recipe. Differences from the original RocAlphaGo trainer (which
+    this file replaced; see git history):
     - momentum+Nesterov SGD, and a warmup + cosine-decay learning rate schedule in place
       of InverseTimeDecay.
     - train_data is the output directory of convert_shuffled.py: train/ and val/
@@ -981,4 +981,4 @@ def run_training_v2(cmd_line_args=None):
 
 
 if __name__ == '__main__':
-    run_training_v2()
+    run_training()
