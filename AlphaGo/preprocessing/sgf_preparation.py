@@ -293,8 +293,7 @@ def cmd_scan(args):
 
 def _bounded_map(pool, fn, work, max_in_flight):
     """Submit at most max_in_flight tasks at a time. Submitting everything up front would
-    materialise the whole file list and let workers outrun the single-threaded writer -
-    the same backpressure pattern game_converter_parallel uses, for the same reason."""
+    materialise the whole file list and let workers outrun the single-threaded writer."""
     import concurrent.futures
     pending = set()
 

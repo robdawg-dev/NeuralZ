@@ -30,7 +30,7 @@ import numpy as np
 import sgf
 
 import AlphaGo.go as go
-from AlphaGo.preprocessing.game_converter import GameConverter, SizeMismatchError
+from game_converter import GameConverter, SizeMismatchError
 
 # Set by _init_worker in each worker process.
 _worker_converter = None

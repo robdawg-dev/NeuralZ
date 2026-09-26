@@ -3,7 +3,7 @@
 Two kinds of test live here:
 
 1. Tests that PASS and lock in behaviour the trained model's correctness depends on
-   (coordinate frame, symmetry consistency, shuffle-buffer coverage, batch identity).
+   (coordinate frame, symmetry consistency, what the converter emits).
    These are the ones that would catch a catastrophic silent regression.
 
 2. Tests that lock in behaviour which LOOKS like a defect until you know why it is
@@ -16,16 +16,14 @@ import subprocess
 import sys
 import textwrap
 
-import h5py as h5
 import numpy as np
 import pytest
 import sgf as sgflib
 
 import AlphaGo.go as go
 from AlphaGo.preprocessing.preprocessing import Preprocess
-from AlphaGo.training.shuffle_buffer import (
-    BOARD_TRANSFORMATIONS, _ShardCache, _epoch_positions, build_game_index,
-    get_or_create_game_split, one_hot_action, shuffle_buffer_batch_generator)
+from AlphaGo.preprocessing import convert_shuffled as conv
+from AlphaGo.training import shard_stream as ss
 from AlphaGo.util import _sgf_init_gamestate, flatten_idx, sgf_iter_states
 
 ALL_FEATURES = ["board", "ones", "turns_since", "liberties", "capture_size",
@@ -39,7 +37,8 @@ BOARD, NFEAT = 19, 48
 # ---------------------------------------------------------------------------
 
 def test_state_tensor_and_action_share_a_coordinate_frame():
-    """state_to_tensor indexes [x][y][plane] and one_hot_action indexes [x][y].
+    """state_to_tensor indexes [x][y][plane] and the training label (shard_stream.encode)
+    indexes [x][y].
 
     If these disagreed, every symmetry transform would rotate the board one way and
     the label the other, and the label would point at an intersection unrelated to the
@@ -57,17 +56,17 @@ def test_state_tensor_and_action_share_a_coordinate_frame():
     assert tensor[pt[0]][pt[1]][1] == 1, "stone not found at [x][y] in the state tensor"
     assert tensor[pt[1]][pt[0]][1] == 0, "stone found at the TRANSPOSED cell"
 
-    onehot = one_hot_action(pt, BOARD)
-    assert onehot[pt[0]][pt[1]] == 1
-    assert onehot.flatten()[flatten_idx(pt, BOARD)] == 1
+    _X, Y = ss.encode(tensor[None], np.array([pt], dtype=np.uint8), np.array([0]),
+                      ["noop"], BOARD)
+    assert Y[0].reshape(BOARD, BOARD)[pt[0]][pt[1]] == 1
+    assert Y[0][flatten_idx(pt, BOARD)] == 1
 
 
-@pytest.mark.parametrize("name", sorted(BOARD_TRANSFORMATIONS))
+@pytest.mark.parametrize("name", sorted(ss.BATCH_TRANSFORMATIONS))
 def test_symmetry_transforms_keep_state_and_label_aligned(name):
     """Applying a transform to the state and to the one-hot label must move both to the
     same intersection - otherwise 7 of the 8 symmetries feed the network mislabelled data.
     """
-    fn = BOARD_TRANSFORMATIONS[name]
     proc = Preprocess(ALL_FEATURES, size=BOARD)
     gs = go.GameState(BOARD, enforce_superko=False)
     for mv in [(3, 15), (15, 3), (2, 2), (16, 16)]:
@@ -76,115 +75,14 @@ def test_symmetry_transforms_keep_state_and_label_aligned(name):
     move = (4, 11)
     assert gs.is_legal(move)
 
-    t_state = fn(state)
-    t_label = fn(one_hot_action(move, BOARD))
+    X, Y = ss.encode(state[None], np.array([move], dtype=np.uint8), np.array([0]),
+                     [name], BOARD)
+    t_state, t_label = X[0], Y[0]
     assert t_label.sum() == 1, "transform destroyed the one-hot label"
-    tx, ty = divmod(int(np.argmax(t_label.flatten())), BOARD)
+    tx, ty = divmod(int(np.argmax(t_label)), BOARD)
     # plane 2 == EMPTY: the transformed label must land on the transformed empty point
     assert t_state[tx][ty][2] == 1, (
         "{}: label landed on a non-empty point - state and label frames disagree".format(name))
-
-
-# ---------------------------------------------------------------------------
-# Shuffle buffer
-# ---------------------------------------------------------------------------
-
-def _make_synthetic_shard(path, game_lengths):
-    """Shard where every position carries a recoverable unique id, so coverage and
-    batch-identity can be checked exactly."""
-    total = sum(game_lengths)
-    with h5.File(path, 'w') as f:
-        st = f.create_dataset('states', shape=(total, BOARD, BOARD, NFEAT), dtype=np.uint8)
-        ac = f.create_dataset('actions', shape=(total, 2), dtype=np.uint8)
-        grp = f.create_group('file_offsets')
-        f['features'] = np.bytes_("board,ones")
-        cur = 0
-        for gi, length in enumerate(game_lengths):
-            for j in range(length):
-                uid = cur + j
-                arr = np.zeros((BOARD, BOARD, NFEAT), dtype=np.uint8)
-                arr[0, 0, 0] = uid % 251
-                arr[0, 1, 0] = (uid // 251) % 251
-                st[cur + j] = arr
-                ac[cur + j] = [uid % BOARD, (uid // BOARD) % BOARD]
-            grp["game{}".format(gi)] = [cur, length]
-            cur += length
-    return total
-
-
-def _uid(state):
-    return int(state[0, 0, 0]) + 251 * int(state[0, 1, 0])
-
-
-@pytest.mark.parametrize("buffer_size", [1, 3, 25, 100, 300])
-def test_epoch_positions_yields_every_position_exactly_once(tmp_path, buffer_size):
-    shard = str(tmp_path / "s.h5")
-    total = _make_synthetic_shard(shard, [7, 13, 5, 40, 1, 22, 9, 3])
-    games, _, _, _ = build_game_index([shard])
-    cache = _ShardCache()
-    try:
-        seen = [_uid(s) for s, _a in _epoch_positions(
-            games, buffer_size, np.random.default_rng(7), cache, BOARD, NFEAT)]
-    finally:
-        cache.close()
-    assert len(seen) == total
-    assert sorted(seen) == list(range(total))
-
-
-def test_game_split_is_position_disjoint(tmp_path):
-    shard = str(tmp_path / "s.h5")
-    total = _make_synthetic_shard(shard, [7, 13, 5, 40, 1, 22, 9, 3])
-    games, _, _, _ = build_game_index([shard])
-    out = tmp_path / "out"
-    out.mkdir()
-    train, val, test = get_or_create_game_split(games, str(out), [0.5, 0.25, 0.25], seed=1)
-
-    def positions(group):
-        found = set()
-        for g in group:
-            found.update(range(g["start"], g["start"] + g["length"]))
-        return found
-
-    ptr, pva, pte = positions(train), positions(val), positions(test)
-    assert not (ptr & pva) and not (ptr & pte) and not (pva & pte)
-    assert len(ptr | pva | pte) == total
-
-
-def test_generator_yields_independent_batch_arrays(tmp_path):
-    """The generator reuses Xbatch/Ybatch in place. Keras's GeneratorDataAdapter peeks
-    two batches via itertools.islice and keeps both, so without a defensive copy the
-    first peeked batch is silently overwritten by the second and a real batch is lost.
-    """
-    import itertools
-    shard = str(tmp_path / "s.h5")
-    _make_synthetic_shard(shard, [20, 20, 20])
-    games, _, _, _ = build_game_index([shard])
-    gen = shuffle_buffer_batch_generator(
-        games, 10, 4, BOARD, NFEAT, [BOARD_TRANSFORMATIONS['noop']], seed=5)
-    try:
-        first, second = list(itertools.islice(gen, 2))
-    finally:
-        gen.close()
-    assert first[0] is not second[0], "batches alias the same array object"
-    assert not np.array_equal(first[0], second[0]), "batch 1 was overwritten by batch 2"
-    assert not (set(_uid(x) for x in first[0]) & set(_uid(x) for x in second[0]))
-
-
-def test_seed_makes_the_position_stream_reproducible(tmp_path):
-    shard = str(tmp_path / "s.h5")
-    _make_synthetic_shard(shard, [20, 20, 20])
-    games, _, _, _ = build_game_index([shard])
-
-    def stream(seed):
-        gen = shuffle_buffer_batch_generator(
-            games, 10, 4, BOARD, NFEAT, [BOARD_TRANSFORMATIONS['noop']], seed=seed)
-        try:
-            return np.stack([next(gen)[0].copy() for _ in range(5)])
-        finally:
-            gen.close()
-
-    assert np.array_equal(stream(42), stream(42))
-    assert not np.array_equal(stream(42), stream(43))
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +195,15 @@ def test_iterator_yields_the_offending_move_before_raising():
     assert seen[-1] == (2, 0)
 
 
+def _converted_moves(path):
+    """The (x, y) labels convert_shuffled emits for one SGF, in game order."""
+    conv._init_worker(["board", "ones"], 19, None, keep_unpacked=True)
+    res = conv.convert_game((0, path))
+    if res["actions"] is None:
+        return []
+    return [tuple(int(v) for v in a) for a in res["actions"]]
+
+
 def test_converter_does_not_emit_an_illegal_move_as_a_label(tmp_path):
     """The position before an unplayable move is valid, but the MOVE is not - and
     emitting it teaches the network exactly what it must never play.
@@ -305,8 +212,6 @@ def test_converter_does_not_emit_an_illegal_move_as_a_label(tmp_path):
     carry one, and before the guard in convert_game each contributed one such label.
     Suicide is illegal under both rulesets KGS offers.
     """
-    from AlphaGo.preprocessing.game_converter import GameConverter, SizeMismatchError
-
     text = ("(;GM[1]FF[4]SZ[19]"
             "AB[aa][ba]"
             "AW[ab][bb][cb][ca]"
@@ -317,13 +222,7 @@ def test_converter_does_not_emit_an_illegal_move_as_a_label(tmp_path):
     f = tmp_path / "g.sgf"
     f.write_text(text)
 
-    conv = GameConverter(["board", "ones"])
-    emitted = []
-    try:
-        for _state, move in conv.convert_game(str(f), 19):
-            emitted.append(tuple(move))
-    except (go.IllegalMove, SizeMismatchError):
-        pass
+    emitted = _converted_moves(str(f))
 
     assert (2, 0) not in emitted, "the illegal move was emitted as a training label"
     assert emitted == [(3, 0), (4, 0)], emitted
@@ -333,22 +232,13 @@ def test_converter_keeps_the_prefix_of_a_truncated_game(tmp_path):
     """A game the engine cannot fully replay must still contribute the positions it
     managed, not be dropped entirely. Suicides land around move 290 of 320 on real data,
     so discarding whole games would waste ~91% of their usable moves."""
-    from AlphaGo.preprocessing.game_converter import GameConverter, SizeMismatchError
-
     good = "(;GM[1]FF[4]SZ[19];B[pd];W[dp];B[pp];W[dd])"
     bad = "(;GM[1]FF[4]SZ[19];B[pd];W[dp];B[pp];W[dd];AE[pd];B[cc])"
-    conv = GameConverter(["board", "ones"])
 
     def convert(text):
         f = tmp_path / "g.sgf"
         f.write_text(text)
-        out = []
-        try:
-            for _state, move in conv.convert_game(str(f), 19):
-                out.append(tuple(move))
-        except (go.IllegalMove, SizeMismatchError):
-            pass
-        return out
+        return _converted_moves(str(f))
 
     assert convert(good) == convert(bad), (
         "the prefix before the unreplayable node must match the clean game exactly")

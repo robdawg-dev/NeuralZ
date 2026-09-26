@@ -28,8 +28,8 @@ class ResTowerPolicy(CNNPolicy):
     head='dense' for anyone who wants the extra head capacity, and a normalized/widened
     variant of the default lightweight head is available via head='conv_norm' (see its
     docstring in create_network for the stability rationale) - either way the action
-    space is unchanged, so nothing downstream (ai.py, mcts.py, the trainer, the shuffle
-    buffer's one_hot_action) needs to change.
+    space is unchanged, so nothing downstream (ai.py, mcts.py, the trainer,
+    shard_stream.encode's labels) needs to change.
     """
 
     @staticmethod
@@ -72,7 +72,7 @@ class ResTowerPolicy(CNNPolicy):
         stability practice (comparable structure appears in KataGo's own policy head) -
         it does NOT add anything KataGo-specific like global board-context pooling, a
         value head, or pass-move handling; the action space and everything downstream
-        (ai.py, mcts.py, the trainer, the shuffle buffer's one_hot_action) is unchanged.
+        (ai.py, mcts.py, the trainer, shard_stream.encode's labels) is unchanged.
         """
         defaults = {
             "board": 19,

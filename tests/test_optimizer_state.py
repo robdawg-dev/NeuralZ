@@ -1,5 +1,5 @@
 """Verifies OptimizerStateCallback and the trainer's resume-side load sequence
-(AlphaGo/training/supervised_policy_trainer_v3.py) round-trip SGD momentum correctly,
+(AlphaGo/training/supervised_policy_trainer_v4.py) round-trip SGD momentum correctly,
 under both a plain optimizer and the mixed_float16 case - --mixed-precision wraps the
 optimizer in a LossScaleOptimizer at compile() time, and that wrapped case was never
 live-tested before being wired into the trainer.
@@ -17,7 +17,7 @@ import keras
 from keras import layers, mixed_precision
 from keras.optimizers import SGD
 
-import AlphaGo.training.supervised_policy_trainer_v3 as v3
+import AlphaGo.training.supervised_policy_trainer_v4 as v4
 
 
 @pytest.fixture(autouse=True)
@@ -65,7 +65,7 @@ def test_optimizer_state_roundtrip(tmp_path, use_mixed_precision):
     assert any(not np.allclose(v, np.zeros_like(v)) for v in saved.values())
 
     # Save via the real trainer callback, not a hand-rolled equivalent.
-    save_cb = v3.OptimizerStateCallback(tmp_path)
+    save_cb = v4.OptimizerStateCallback(tmp_path)
     save_cb.set_model(model)
     save_cb.on_epoch_end(0)
     state_path = tmp_path / "optimizer_state.npz"

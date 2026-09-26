@@ -3,10 +3,29 @@ import numpy as np
 import pytest
 
 from AlphaGo.training import shard_stream as ss
-from AlphaGo.training.shuffle_buffer import BOARD_TRANSFORMATIONS, one_hot_action
 from tests.test_convert_shuffled import FEATURES, _run, _selection
 
 ALL = list(ss.BATCH_TRANSFORMATIONS)
+
+# Single-position reference versions of the symmetries, written with different numpy calls
+# than BATCH_TRANSFORMATIONS so the comparison below is a real cross-check. Each acts on
+# axes (0, 1) of a (size, size) label or a (size, size, features) state.
+BOARD_TRANSFORMATIONS = {
+    "noop": lambda feature: feature,
+    "rot90": lambda feature: np.rot90(feature, 1),
+    "rot180": lambda feature: np.rot90(feature, 2),
+    "rot270": lambda feature: np.rot90(feature, 3),
+    "fliplr": lambda feature: np.fliplr(feature),
+    "flipud": lambda feature: np.flipud(feature),
+    "diag1": lambda feature: np.transpose(feature, (1, 0) + tuple(range(2, feature.ndim))),
+    "diag2": lambda feature: np.fliplr(np.rot90(feature, 1))
+}
+
+
+def one_hot_action(action, size=19):
+    categorical = np.zeros((size, size), dtype=np.float32)
+    categorical[action] = 1
+    return categorical
 
 
 @pytest.fixture(scope="module")

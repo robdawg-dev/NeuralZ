@@ -96,7 +96,7 @@ MODEL_SPECS = {
         # ResTowerPolicy, 15 blocks x 192 filters (this project's original/default
         # architecture size - see resnet_tower_policy.py's own class defaults), with
         # the same conv_norm head as the b10c128* family. Trained via
-        # supervised_policy_trainer_v3.py with matched seed (90001) and matched
+        # supervised_policy_trainer_v3.py (now in deprecated/) with matched seed (90001) and matched
         # game_split.json (copied from b10c128mb1024's own run directory) against
         # that run, for a rigorous apples-to-apples comparison at equal positions
         # seen. Minibatch 1024, --lr-schedule plateau, peak LR 1.6. Two manual LR

@@ -15,9 +15,9 @@ import os
 import h5py as h5
 import numpy as np
 
-# Batch versions of shuffle_buffer.BOARD_TRANSFORMATIONS, acting on axes (1, 2) of an
+# Board symmetries for a batch, acting on axes (1, 2) of an
 # (N, size, size[, F]) array rather than axes (0, 1) of one position. The test suite
-# checks each against its single-position original.
+# checks each against a single-position reference version.
 BATCH_TRANSFORMATIONS = {
     "noop": lambda a: a,
     "rot90": lambda a: np.rot90(a, 1, axes=(1, 2)),

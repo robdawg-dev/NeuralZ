@@ -196,22 +196,23 @@ where the file boundaries fall changes. The 40M set below predates this and was 
 
 ## Training
 
-`supervised_policy_trainer_v4.py` is `v3` with only the data layer replaced. It streams
-the shards start to finish, wrapping at the end, with **no shuffle buffer**, no game index
-and no split logic. Each position gets a random symmetry, chosen as a function of (seed,
-position in the stream), so a resumed run continues exactly where an uninterrupted one
-would have been.
+`supervised_policy_trainer_v4.py` is `v3` with only the data layer replaced: it reads
+through `shard_stream.py` instead of v3's shuffle buffer. It streams the shards start to
+finish, wrapping at the end, with **no shuffle buffer**, no game index and no split logic.
+Each position gets a random symmetry, chosen as a function of (seed, position in the
+stream), so a resumed run continues exactly where an uninterrupted one would have been.
 
 Every pass sees the same order. If varying it between passes ever matters, reintroduce a
 small shuffle over shard order rather than a position buffer.
 
-`v3`, `shuffle_buffer.py` and `game_converter.py` / `game_converter_parallel.py` are
-untouched, and still work for shards in the older per-game format.
+`v3`, `shuffle_buffer.py` and `game_converter.py` / `game_converter_parallel.py` have
+moved to `deprecated/`. They are not maintained and only read the older per-game shard
+format; see `deprecated/README.md`.
 
 ### Why the shuffle moved out of the trainer
 
-The 400k-position buffer in `v3` holds about 1% of a 40M-position set, so positions from
-one game cluster together. Simulated over a full pass of a realistic set:
+The 400k-position buffer in `v3` held about 1% of a 40M-position set, so positions from
+one game clustered together. Simulated over a full pass of a realistic set:
 
 | | 400k buffer | uniform shuffle | measured on the real shards |
 |---|---|---|---|
@@ -283,8 +284,8 @@ imply.
 | `last_moves` is not used | Absent captures it is identical to `turns_since` planes 0–4; they diverge on 7.30% of positions overall but only 0.47% before move 50. Adding it changes the plane count and forces a retrain from scratch. |
 | No hopeless-position filter | It would drop 23.4% of positions on a proxy we cannot observe (winrate loss collapses to zero in decided games), and what it removes is overwhelmingly endgame — the phase the bot is already weakest at. |
 | No visit-count filter | Blunder rate by visits is 0.248% below 200 visits against 0.053% above 1000. Real, but 99.75% of low-visit moves are clean; low-visit moves sit near the raw policy's top choice. |
-| `shuffle_buffer.py` has no race | No threads, locks or pools; both yield points copy defensively; `model.fit` consumes one iterator. The documented 2-in-8 collapse rate is not explained by it. |
-| `file_offsets` are validated at load | Gaps, overlaps and trailing rows were all silent. Now a startup error naming the shard. |
+| `shuffle_buffer.py` (now deprecated) had no race | No threads, locks or pools; both yield points copy defensively; `model.fit` consumes one iterator. The documented 2-in-8 collapse rate is not explained by it. |
+| `file_offsets` were validated at load (per-game shards, now deprecated) | Gaps, overlaps and trailing rows were all silent. Made a startup error naming the shard. |
 
 ---
 

@@ -506,7 +506,7 @@ def analyze(directory, workers=None, limit=None, deep=False, chunk_size=200,
         with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
             # Bounded in-flight submission: the file list can be enormous, and submitting
             # everything up front would both materialise it and let workers outrun the
-            # aggregation loop. Same backpressure pattern as game_converter_parallel.
+            # aggregation loop. Same backpressure pattern as sgf_preparation._bounded_map.
             max_in_flight = workers * 4
             pending = set()
 
