@@ -50,7 +50,7 @@ import sys
 import time
 
 from AlphaGo.preprocessing.sgf_analyze import (
-    SUSPECT_GTYPES, iter_sgf_files, scan_file_cheap, _chunks)
+    iter_sgf_files, scan_file_cheap, _chunks)
 
 
 # A move together with its KataGo annotation, if present. Needed as one pattern (rather

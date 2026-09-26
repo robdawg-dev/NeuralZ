@@ -1,6 +1,4 @@
 """Tests for the v4 training stream over pre-shuffled shards."""
-import os
-
 import numpy as np
 import pytest
 

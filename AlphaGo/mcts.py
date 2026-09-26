@@ -213,7 +213,3 @@ class MCTS(object):
             self._root._parent = None
         else:
             self._root = TreeNode(None, 1.0)
-
-
-class ParallelMCTS(MCTS):
-    pass

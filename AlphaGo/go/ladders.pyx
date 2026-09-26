@@ -2,7 +2,6 @@
 # cython: boundscheck=False
 # cython: initializedcheck=False
 # cython: nonecheck=False
-from AlphaGo.util import unflatten_idx
 from cython.operator cimport dereference as d
 
 

@@ -14,8 +14,6 @@ RUN apt-get update \
 
 RUN pip install --no-cache-dir \
     "h5py>=3.11.0,<3.15.0" \
-    scipy \
-    PyYAML \
     sgf==0.5 \
     pygtp==0.3 \
     Cython \

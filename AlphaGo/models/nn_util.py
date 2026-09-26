@@ -1,4 +1,3 @@
-from keras import backend as K
 from keras.models import model_from_json
 from keras.layers import Layer
 from AlphaGo.preprocessing.preprocessing import Preprocess

@@ -131,35 +131,6 @@ class ProbabilisticPolicyPlayer(object):
         # No 'sensible' moves available, so do pass move
         return go.PASS
 
-    def get_moves(self, states):
-        """Batch version of get_move. A list of moves is returned (one per state)
-        """
-        sensible_move_lists = [[move for move in st.get_legal_moves(include_eyes=False)]
-                               for st in states]
-        all_moves_distributions = self.policy.batch_eval_state(states, sensible_move_lists)
-        move_list = [None] * len(states)
-        for i, move_probs in enumerate(all_moves_distributions):
-            if len(move_probs) == 0 or len(states[i].get_history()) > self.move_limit:
-                move_list[i] = go.PASS
-            else:
-                if self.greedy_start is not None and len(states[i].get_history()) >= self.greedy_start:
-                    # greedy
-
-                    max_prob = max(move_probs, key=itemgetter(1))
-                    move_list[i] = max_prob[0]
-                else:
-                    # probabilistic
-
-                    move_probs = self._restrict_to_top_k(move_probs, states[i])
-                    moves, probabilities = zip(*move_probs)
-                    # apply 'temperature' to the distribution
-                    probabilities = self.apply_temperature(probabilities)
-                    # numpy interprets a list of tuples as 2D, so we must choose an
-                    # _index_ of moves then apply it in 2 steps
-                    choice_idx = np.random.choice(len(moves), p=probabilities)
-                    move_list[i] = moves[choice_idx]
-        return move_list
-
 
 class MCTSPlayer(object):
     def __init__(self, value_function, policy_function, rollout_function, lmbda=.5, c_puct=5,

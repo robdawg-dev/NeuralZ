@@ -9,8 +9,6 @@ import gzip
 import json
 import os
 
-import pytest
-
 from AlphaGo.preprocessing import sgf_preparation as prep
 
 

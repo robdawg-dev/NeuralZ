@@ -186,7 +186,7 @@ class ResnetPolicy(CNNPolicy):
     """
     @staticmethod
     def create_network(**kwargs):
-        """construct a convolutional neural network with Resnet-style skip connections.
+        r"""construct a convolutional neural network with Resnet-style skip connections.
         Arguments are the same as with the default CNNPolicy network, except the default
         number of layers is 20 plus a new n_skip parameter
 
