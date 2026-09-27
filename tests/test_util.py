@@ -108,6 +108,16 @@ def test_save_writes_handicap_count_and_white_moves_first(tmp_path):
     assert text.count(";W[") == 1 and ";B[" not in text
 
 
+def test_save_writes_each_moves_own_color(tmp_path):
+    state = go.GameState(19, enforce_superko=False)
+    for move, color in [((3, 3), go.BLACK), ((15, 15), go.BLACK), (None, go.WHITE),
+                        (None, go.WHITE), ((2, 2), go.BLACK)]:
+        state.do_move(move, color)
+    reread = [player for (_gs, _m, player) in
+              sgf_iter_states(_saved(tmp_path, state), include_end=False)]
+    assert reread == [go.BLACK, go.BLACK, go.WHITE, go.WHITE, go.BLACK]
+
+
 def test_saved_file_parses(tmp_path):
     text = _saved(tmp_path, _played(ASYMMETRIC_MOVES))
     game = sgflib.parse(text)[0]

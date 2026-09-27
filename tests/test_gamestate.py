@@ -129,6 +129,93 @@ class TestKo(unittest.TestCase):
             "superko went undetected in a handicap game - is_positional_superko's "
             "move-parity pre-filter is scanning the wrong player's moves")
 
+    # A superko where the history does NOT alternate: Black plays twice in a row (as a GTP
+    # controller can send, e.g. handicap placed as ordinary 'play black' moves). A pre-filter
+    # that finds the current player's moves by index parity then scans the wrong player's
+    # moves; it has to go by each move's recorded color instead.
+    #
+    #   . B W .
+    #   B W . W      White's (1, 1) is captured by Black at (2, 1); after two passes clear
+    #   . B W .      the ko, White retaking at (1, 1) would recreate an earlier position.
+    NON_ALTERNATING_SUPERKO_MOVES = [
+        ((1, 0), go.BLACK), ((2, 0), go.WHITE), ((0, 1), go.BLACK), ((1, 1), go.WHITE),
+        ((1, 2), go.BLACK), ((7, 7), go.BLACK),  # Black twice in a row
+        ((3, 1), go.WHITE), ((5, 5), go.BLACK), ((2, 2), go.WHITE),
+        ((2, 1), go.BLACK),  # captures White's (1, 1): simple ko
+        (None, go.WHITE), (None, go.BLACK)]  # passes clear the ko
+
+    def _non_alternating_superko_state(self, enforce_superko):
+        gs = GameState(size=9, enforce_superko=enforce_superko)
+        for move, color in self.NON_ALTERNATING_SUPERKO_MOVES:
+            gs.do_move(move, color)
+        self.assertEqual(gs.get_current_player(), go.WHITE)
+        return gs
+
+    def test_positional_superko_after_consecutive_same_color_moves(self):
+        self.assertTrue(self._non_alternating_superko_state(False).is_legal((1, 1)))
+        self.assertFalse(
+            self._non_alternating_superko_state(True).is_legal((1, 1)),
+            "superko went undetected after two consecutive Black moves")
+
+
+class TestMoveColors(unittest.TestCase):
+
+    def test_alternating_play_records_alternating_colors(self):
+        gs = GameState(size=9)
+        for move in [(0, 0), (1, 1), None, (2, 2)]:
+            gs.do_move(move)
+        self.assertEqual(gs.get_history_with_colors(), [
+            ((0, 0), go.BLACK), ((1, 1), go.WHITE), (None, go.BLACK), ((2, 2), go.WHITE)])
+        self.assertEqual([m for m, _c in gs.get_history_with_colors()], gs.get_history())
+
+    def test_explicit_colors_are_recorded(self):
+        gs = GameState(size=9)
+        gs.do_move((0, 0), go.WHITE)
+        gs.do_move((1, 1), go.WHITE)
+        gs.do_move((2, 2), go.BLACK)
+        self.assertEqual([c for _m, c in gs.get_history_with_colors()],
+                         [go.WHITE, go.WHITE, go.BLACK])
+        board = gs.get_board()
+        self.assertEqual((board[0][0], board[1][1]), (go.WHITE, go.WHITE))
+
+    def test_pass_honors_its_color(self):
+        gs = GameState(size=9)
+        gs.do_move(None, go.WHITE)  # Black to move, White passes
+        self.assertEqual(gs.get_history_with_colors(), [(None, go.WHITE)])
+        self.assertEqual(gs.get_current_player(), go.BLACK)
+
+    def test_pass_without_color_is_the_current_players(self):
+        gs = GameState(size=9)
+        gs.do_move((0, 0))
+        gs.do_move(None)
+        self.assertEqual(gs.get_history_with_colors()[-1], (None, go.WHITE))
+        self.assertEqual(gs.get_current_player(), go.BLACK)
+
+    def test_setup_stones_are_recorded_with_their_color(self):
+        gs = GameState(size=9)
+        gs.place_handicap_stone((0, 0), go.BLACK)
+        gs.place_handicap_stone((1, 1), go.BLACK)
+        gs.place_handicap_stone((2, 2), go.WHITE)
+        gs.do_move((3, 3))
+        self.assertEqual([c for _m, c in gs.get_history_with_colors()],
+                         [go.BLACK, go.BLACK, go.WHITE, go.BLACK])
+
+    def test_copy_has_its_own_colors(self):
+        gs = GameState(size=9)
+        gs.do_move((0, 0))
+        copy = gs.copy()
+        copy.do_move((1, 1), go.BLACK)
+        self.assertEqual(gs.get_history_with_colors(), [((0, 0), go.BLACK)])
+        self.assertEqual(copy.get_history_with_colors(),
+                         [((0, 0), go.BLACK), ((1, 1), go.BLACK)])
+
+    def test_try_stone_records_and_undoes_its_color(self):
+        gs = GameState(size=9)
+        gs.do_move((0, 0))
+        with gs.try_stone(flatten_idx((1, 1), 9)):
+            self.assertEqual(gs.get_history_with_colors()[-1], ((1, 1), go.WHITE))
+        self.assertEqual(gs.get_history_with_colors(), [((0, 0), go.BLACK)])
+
 
 class TestEye(unittest.TestCase):
 

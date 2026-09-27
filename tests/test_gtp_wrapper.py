@@ -110,6 +110,15 @@ def test_play_pass_out_of_turn_is_that_colors_pass():
     assert game._state.get_current_player() == go.BLACK
 
 
+def test_handicap_sent_as_consecutive_black_moves_keeps_real_colors():
+    engine, game = _engine()
+    for command in ["play black D4", "play black Q16", "play white Q4", "play white pass"]:
+        assert engine.send(command) == _ok()
+    assert [c for _m, c in game._state.get_history_with_colors()] == [
+        go.BLACK, go.BLACK, go.WHITE, go.WHITE]
+    assert game._state.get_current_player() == go.BLACK
+
+
 @pytest.mark.parametrize("move", ["black D4", "black T20", "black Z1", "purple D4", "black"])
 def test_illegal_or_malformed_play_is_rejected(move):
     engine, _ = _engine()

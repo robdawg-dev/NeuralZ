@@ -60,6 +60,10 @@ cdef class GameState:
     # List with move history
     cdef vector[location_t] moves_history
 
+    # Color of each entry in moves_history, index for index. Play need not alternate: GTP
+    # lets either color move at any time (e.g. handicap sent as consecutive black moves).
+    cdef vector[stone_t] moves_colors
+
     # Number of SETUP stones placed before play began, of either colour (SGF AB and AW).
     # This is the boundary of the setup block in moves_history - i.e. where real
     # alternating play starts - and is what the superko pre-filter keys off.
@@ -107,10 +111,8 @@ cdef class GameState:
     ############################################################################
 
     cdef bool is_positional_superko(self, location_t location)
-    """Find all actions that the current_player has done in the past.
-
-       This takes into account the fact that history starts with BLACK when there are no handicaps
-       or with WHITE when there are.
+    """Check whether the current player playing at 'location' would recreate a previously
+       seen position. Move must otherwise be legal.
     """
 
     cpdef bool is_legal_move(self, location_t location)
@@ -228,7 +230,8 @@ cdef class GameState:
     """
 
     cpdef void do_move(self, tuple action, stone_t color=*)
-    """Play stone at action=(x,y). Use action=_PASS (-1) to pass. Checks move legality first.
+    """Play stone at action=(x,y), or pass with action=None, as 'color' (default: the current
+       player). Checks move legality first.
 
        If it is a legal move, current_player switches to the opposite color. If not, an
        IllegalMove exception is raised

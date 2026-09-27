@@ -128,10 +128,8 @@ class GTPGameConnector(object):
         # vertex in GTP language is 1-indexed, whereas GameState's are zero-indexed
         try:
             if vertex == gtp.PASS:
-                # GTP lets either side move at any time, passes included - but GameState's
-                # do_move() ignores its color argument for a pass, so set the player first.
-                self._state.set_current_player(_GTP_TO_GO_COLOR[color])
-                self._state.do_move(go.PASS)
+                # with its color: GTP lets either side move at any time, passes included
+                self._state.do_move(go.PASS, _GTP_TO_GO_COLOR[color])
             else:
                 (x, y) = vertex
                 self._state.do_move((x - 1, y - 1), _GTP_TO_GO_COLOR[color])

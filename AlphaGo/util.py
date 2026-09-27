@@ -1,5 +1,4 @@
 import os
-import itertools
 import numpy as np
 import sgf
 from AlphaGo import go
@@ -83,21 +82,23 @@ def save_gamestate_to_sgf(gamestate, path, filename, black_player_name='Unknown'
     str_list.append('KM[{}]'.format(komi))
     str_list.append('PB[{}]'.format(black_player_name))
     str_list.append('PW[{}]'.format(white_player_name))
-    cycle_string = 'BW'
     # Handicap stones are setup on the root node (with HA), as SGF specifies - a setup
-    # node anywhere else is rejected by sgf_iter_states. White moves first after them.
+    # node anywhere else is rejected by sgf_iter_states.
     handicaps = gamestate.get_handicaps()
+    # (skip the leading handicap placements - written here as AB[] stones instead)
+    moves = gamestate.get_history_with_colors()[len(handicaps):]
     if len(handicaps) > 0:
-        cycle_string = 'WB'
         str_list.append('HA[{}]'.format(len(handicaps)))
         str_list.append('AB')
         for handicap in handicaps:
             str_list.append('[{}]'.format(_sgf_point(handicap, size)))
-        str_list.append('PL[W]')
-    # Move list (skip the leading handicap placements - already written above as AB[] stones)
-    for move, color in zip(gamestate.get_history()[len(handicaps):], itertools.cycle(cycle_string)):
+        # who moves first after the handicap (normally White)
+        first_color = moves[0][1] if moves else gamestate.get_current_player()
+        str_list.append('PL[{}]'.format('B' if first_color == go.BLACK else 'W'))
+    # Move list, each with the color that actually played it - play need not alternate
+    for move, color in moves:
         # Move color prefix
-        str_list.append(';{}'.format(color))
+        str_list.append(';{}'.format('B' if color == go.BLACK else 'W'))
         # Move coordinates
         if move is None:
             str_list.append('[tt]')

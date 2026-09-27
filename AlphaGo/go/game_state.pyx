@@ -66,8 +66,9 @@ cdef class GameState:
         self.group_empty = group_new(stone_t.EMPTY)
         self.group_border = group_new(stone_t.BORDER)
 
-        # Create empty history list
+        # Create empty history lists
         self.moves_history = vector[location_t]()
+        self.moves_colors = vector[stone_t]()
 
         # Initialize player colors
         self.current_player = stone_t.BLACK
@@ -132,6 +133,7 @@ cdef class GameState:
         # Copy all 'simple' C++ objects (i.e. non-pointers / non-groups) using default C++ copying
         # rules, which automatically does a deep-copy of containers.
         self.moves_history = copy_state.moves_history
+        self.moves_colors = copy_state.moves_colors
         self.legal_moves = copy_state.legal_moves
 
         # Note: group_empty and group_border are constant, so duplicating the underlying object is
@@ -198,38 +200,23 @@ cdef class GameState:
            to a previously seen state. Move must otherwise be legal.
         """
 
-        cdef int first
+        cdef size_t i
         cdef bool played = False
 
-        # Part 1: quickly check that the current player has ever played at this location; if not, no
-        # fancier check is needed.
-
-        # Check if 'location' is one of the handicap stones placed by BLACK
-        if self.current_player == stone_t.BLACK and self.num_handicap > 0:
-            played = location in self.moves_history[:self.num_handicap]
-
-        # Calculate which was the first non-handicap move made by the current player.
+        # Part 1: quickly check that the current player has ever put a stone (move or setup
+        # stone) at this location; if not, no fancier check is needed.
         #
-        # Derived from parity rather than from who-moves-first: the opponent played the
-        # most recent move, so the current player's own moves sit at indices
-        # size()-2, size()-4, ... - that is, every other index sharing size()'s parity.
-        # The first such index at or after the handicap block starts the slice.
-        #
-        # The previous form (num_handicap + 1 if WHITE else 0) assumed Black always moves
-        # first, which only holds in an even game. After N black handicap stones WHITE
-        # moves first, so White's moves land on indices N, N+2, ... and Black's on
-        # N+1, N+3, ... - exactly inverted from what that expression produced, making this
-        # pre-filter scan the OPPONENT's moves in every handicap game. Since a miss here
-        # returns "not superko" without running the Part 2 hash check below, that let
-        # genuine superko violations through (permissive direction) whenever
-        # enforce_superko was on - i.e. for the GTP player, which is the only caller that
-        # enables it.
-        first = self.num_handicap
-        if (first % 2) != (self.moves_history.size() % 2):
-            first += 1
-
-        # Check if 'location' matches any other move made by the current player.
-        played = played or location in self.moves_history[first::2]
+        # Goes by each entry's recorded color, not by its index: play need not alternate
+        # (handicap stones, a GTP controller sending consecutive moves of one color), and
+        # earlier parity-based versions of this check scanned the OPPONENT's moves whenever
+        # it didn't - in every handicap game, and after any two same-color moves in a row.
+        # A miss here returns "not superko" without running the Part 2 hash check below,
+        # which let genuine superko violations through whenever enforce_superko was on -
+        # i.e. for the GTP player, which is the only caller that enables it.
+        for i in range(self.moves_history.size()):
+            if self.moves_history[i] == location and self.moves_colors[i] == self.current_player:
+                played = True
+                break
 
         # If player never played at 'location', superko is impossible and we're done.
         if not played:
@@ -623,6 +610,10 @@ cdef class GameState:
 
         cdef location_t x, y, location
 
+        # Play as 'color' if given - for a pass as much as for a stone.
+        if color != stone_t.EMPTY and color != self.current_player:
+            self.swap_players()
+
         # Note: as per the python interface, 'None' is considerd a pass
         if action is None:
             location = action_t.PASS
@@ -636,9 +627,6 @@ cdef class GameState:
             self.ko = -1
 
         else:
-            if color != stone_t.EMPTY and color != self.current_player:
-                self.swap_players()
-
             # Convert from tuple (x, y) input to 1d coordinate.
             (x, y) = action
             location = calculate_board_location(y, x, self.size)
@@ -652,6 +640,7 @@ cdef class GameState:
 
         # Add move to history
         self.moves_history.push_back(location)
+        self.moves_colors.push_back(self.current_player)
 
         # Swap current player for next turn.
         self.swap_players()
@@ -917,6 +906,13 @@ cdef class GameState:
         return [None if loc == action_t.PASS else calculate_tuple_location(loc, self.size)
                 for loc in self.moves_history]
 
+    def get_history_with_colors(self):
+        """Return history as a list of (move, color) pairs: move as in get_history(), color
+        the stone_t that played it. Setup/handicap stones are included, as in get_history().
+        """
+
+        return list(zip(self.get_history(), self.moves_colors))
+
     def get_captures_black(self):
         """Return amount of black stones captures
         """
@@ -1087,6 +1083,7 @@ cdef class TemporaryMove:
             # Call the same state-updating methods as do_move.
             self.state.ko = self.state.add_stone(self.move)
             self.state.moves_history.push_back(self.move)
+            self.state.moves_colors.push_back(self.player_color)
             self.state.swap_players()
             self.state.update_legal_moves()
         else:
@@ -1182,6 +1179,7 @@ cdef class TemporaryMove:
         if self.prepare_next:
             # Remove stone from history.
             self.state.moves_history.pop_back()
+            self.state.moves_colors.pop_back()
 
             # Restore ko.
             self.state.ko = self.previous_ko
