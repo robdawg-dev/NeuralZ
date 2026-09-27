@@ -114,25 +114,49 @@ def test_saved_file_parses(tmp_path):
     assert len(list(game.rest)) == len(ASYMMETRIC_MOVES)
 
 
-@pytest.mark.xfail(strict=True, reason="bug 3: save writes rows via REV_LETTERS (flipped) "
-                                       "but _parse_sgf_move reads them unflipped")
+def test_save_uses_the_games_own_size(tmp_path):
+    text = _saved(tmp_path, _played([(0, 0), (8, 1), (4, 6), None], size=9))
+    assert "SZ[9]" in text
+    game = sgflib.parse(text)[0]
+    points = [node.properties.get("B", node.properties.get("W"))[0] for node in game.rest]
+    assert all(set(p) <= set("abcdefghi") for p in points if p != "tt")
+    reread = sgf_to_gamestate(text)
+    assert reread.get_size() == 9
+    assert len(reread.get_history()) == 4
+
+
+def test_saved_handicap_game_is_readable(tmp_path):
+    state = _played([(9, 9), (2, 5)], handicaps=[(3, 3), (15, 15)])
+    text = _saved(tmp_path, state)
+    root = sgflib.parse(text)[0].root
+    assert root.properties["HA"] == ["2"]
+    assert len(root.properties["AB"]) == 2
+    assert root.properties["PL"] == ["W"]
+    reread = sgf_to_gamestate(text)
+    assert len(reread.get_handicaps()) == 2
+    assert len(reread.get_history()) == 4
+    assert reread.get_current_player() == go.WHITE
+
+
+BUG_3 = ("bug 3: save writes rows reversed (y=0 as the bottom row) but _parse_sgf_move "
+         "reads them unreversed - pending a decision on the coordinate convention")
+
+
+@pytest.mark.xfail(strict=True, reason=BUG_3)
 def test_save_round_trips_moves(tmp_path):
     state = _played(ASYMMETRIC_MOVES)
     reread = sgf_to_gamestate(_saved(tmp_path, state))
     assert reread.get_history() == state.get_history()
 
 
-@pytest.mark.xfail(strict=True, reason="bug 4: SZ comes from the size argument (default "
-                                       "19), not the state; REV_LETTERS assumes 19 rows")
+@pytest.mark.xfail(strict=True, reason=BUG_3)
 def test_save_round_trips_a_9x9_game(tmp_path):
     state = _played([(0, 0), (8, 1), (4, 6)], size=9)
     reread = sgf_to_gamestate(_saved(tmp_path, state))
-    assert reread.get_size() == 9
     assert reread.get_history() == state.get_history()
 
 
-@pytest.mark.xfail(strict=True, reason="bug 5: handicap stones are written as ;AB on a "
-                                       "non-root node, which sgf_iter_states rejects")
+@pytest.mark.xfail(strict=True, reason=BUG_3)
 def test_save_round_trips_a_handicap_game(tmp_path):
     state = _played([(9, 9), (2, 5)], handicaps=[(3, 3), (15, 15)])
     reread = sgf_to_gamestate(_saved(tmp_path, state))

@@ -6,7 +6,6 @@ from AlphaGo import go
 
 # for board location indexing
 LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-REV_LETTERS = 'SRQPONMLKJIHGFEDCBA'
 
 # SGF properties that change the position, or whose turn it is, WITHOUT being a move.
 # Legal on any node, not just the root. Everything else that can appear on a moveless
@@ -65,10 +64,18 @@ def sgf_to_gamestate(sgf_string):
     return gs
 
 
+def _sgf_point(point, size):
+    """SGF coordinate for an (x, y) point. Rows are written reversed (y=0 is the bottom
+    row), which _parse_sgf_move does not undo - see test_util.py's bug 3 test."""
+    x, y = point
+    return '{}{}'.format(LETTERS[x], LETTERS[size - 1 - y]).lower()
+
+
 def save_gamestate_to_sgf(gamestate, path, filename, black_player_name='Unknown',
-                          white_player_name='Unknown', size=19, komi=7.5):
+                          white_player_name='Unknown', komi=7.5):
     """Creates a simplified sgf for viewing playouts or positions
     """
+    size = gamestate.get_size()
     str_list = []
     # Game info
     str_list.append('(;GM[1]FF[4]CA[UTF-8]')
@@ -77,15 +84,16 @@ def save_gamestate_to_sgf(gamestate, path, filename, black_player_name='Unknown'
     str_list.append('PB[{}]'.format(black_player_name))
     str_list.append('PW[{}]'.format(white_player_name))
     cycle_string = 'BW'
-    # Handle handicaps
+    # Handicap stones are setup on the root node (with HA), as SGF specifies - a setup
+    # node anywhere else is rejected by sgf_iter_states. White moves first after them.
     handicaps = gamestate.get_handicaps()
     if len(handicaps) > 0:
         cycle_string = 'WB'
         str_list.append('HA[{}]'.format(len(handicaps)))
-        str_list.append(';AB')
+        str_list.append('AB')
         for handicap in handicaps:
-            str_list.append('[{}{}]'.format(LETTERS[handicap[0]].lower(),
-                                            REV_LETTERS[handicap[1]].lower()))
+            str_list.append('[{}]'.format(_sgf_point(handicap, size)))
+        str_list.append('PL[W]')
     # Move list (skip the leading handicap placements - already written above as AB[] stones)
     for move, color in zip(gamestate.get_history()[len(handicaps):], itertools.cycle(cycle_string)):
         # Move color prefix
@@ -94,7 +102,7 @@ def save_gamestate_to_sgf(gamestate, path, filename, black_player_name='Unknown'
         if move is None:
             str_list.append('[tt]')
         else:
-            str_list.append('[{}{}]'.format(LETTERS[move[0]].lower(), REV_LETTERS[move[1]].lower()))
+            str_list.append('[{}]'.format(_sgf_point(move, size)))
     str_list.append(')')
     with open(os.path.join(path, filename), "w") as f:
         f.write(''.join(str_list))
@@ -172,11 +180,6 @@ def plot_network_output(scores, board, history, out_directory, output_file,
             'the RocAlphaGo project, so it is not included in the requirements file. ' +
             'You must install matplotlib yourself to use the plotting functions.')
         raise e
-
-    from distutils.version import StrictVersion
-    matplotlib_version = matplotlib.__version__
-    if StrictVersion(matplotlib_version) < StrictVersion('1.5.1'):
-        print('Your version of matplotlib might not support our use of it')
 
     # Initial matplotlib setup
     fig, ax = plt.subplots(figsize=(10, 10))

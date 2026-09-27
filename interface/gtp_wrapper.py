@@ -2,6 +2,8 @@ import datetime
 import sys
 import multiprocessing
 import os
+import shutil
+import tempfile
 import gtp
 from AlphaGo import go
 from AlphaGo.util import save_gamestate_to_sgf
@@ -29,8 +31,7 @@ _GTP_TO_GO_COLOR = {gtp.BLACK: go.BLACK, gtp.WHITE: go.WHITE}
 
 
 def run_gnugo(sgf_file_name, command):
-    from distutils import spawn
-    if spawn.find_executable('gnugo'):
+    if shutil.which('gnugo'):
         from subprocess import Popen, PIPE
         p = Popen(['gnugo', '--chinese-rules', '--mode', 'gtp', '-l', sgf_file_name],
                   stdout=PIPE, stdin=PIPE, stderr=PIPE)
@@ -84,13 +85,18 @@ class ExtendedGtpEngine(gtp.Engine):
         moves = [gtp.parse_vertex(vertex) for vertex in vertices]
         self._game.place_handicaps(moves)
 
-    def cmd_final_score(self, arguments):
+    def _ask_gnugo_about_current_game(self, command):
         sgf_file_name = self._game.get_current_state_as_sgf()
-        return self.call_gnugo(sgf_file_name, 'final_score\n')
+        try:
+            return self.call_gnugo(sgf_file_name, command)
+        finally:
+            os.remove(sgf_file_name)
+
+    def cmd_final_score(self, arguments):
+        return self._ask_gnugo_about_current_game('final_score\n')
 
     def cmd_final_status_list(self, arguments):
-        sgf_file_name = self._game.get_current_state_as_sgf()
-        return self.call_gnugo(sgf_file_name, 'final_status_list {}\n'.format(arguments))
+        return self._ask_gnugo_about_current_game('final_status_list {}\n'.format(arguments))
 
     def cmd_load_sgf(self, arguments):
         pass
@@ -122,6 +128,9 @@ class GTPGameConnector(object):
         # vertex in GTP language is 1-indexed, whereas GameState's are zero-indexed
         try:
             if vertex == gtp.PASS:
+                # GTP lets either side move at any time, passes included - but GameState's
+                # do_move() ignores its color argument for a pass, so set the player first.
+                self._state.set_current_player(_GTP_TO_GO_COLOR[color])
                 self._state.do_move(go.PASS)
             else:
                 (x, y) = vertex
@@ -146,10 +155,14 @@ class GTPGameConnector(object):
             return (x + 1, y + 1)
 
     def get_current_state_as_sgf(self):
-        from tempfile import NamedTemporaryFile
-        temp_file = NamedTemporaryFile(delete=False)
-        save_gamestate_to_sgf(self._state, '', temp_file.name)
-        return temp_file.name
+        """Writes the game to a new temp file and returns its path; the caller deletes it.
+
+        The handle mkstemp opens is closed before writing: on Windows a file can't be
+        opened a second time while its first handle is still open."""
+        fd, path = tempfile.mkstemp(suffix='.sgf')
+        os.close(fd)
+        save_gamestate_to_sgf(self._state, '', path)
+        return path
 
     def place_handicaps(self, vertices):
         actions = []

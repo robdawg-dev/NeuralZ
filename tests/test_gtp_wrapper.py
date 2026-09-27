@@ -104,8 +104,6 @@ def test_play_pass():
     assert game._state.get_current_player() == go.WHITE
 
 
-@pytest.mark.xfail(strict=True, reason="bug 1: a pass is played without its color, so it "
-                                       "goes to whoever's turn the engine thinks it is")
 def test_play_pass_out_of_turn_is_that_colors_pass():
     engine, game = _engine()
     assert engine.send("play white pass") == _ok()   # black to move, white passes
@@ -197,13 +195,24 @@ def test_scoring_commands_send_the_game_to_gnugo(monkeypatch, command, gnugo_com
     assert ";B[" in sgf_text
 
 
-@pytest.mark.xfail(strict=True, reason="bug 2: get_current_state_as_sgf never deletes its "
-                                       "temp file (and writes it while still open)")
-def test_scoring_does_not_leave_temp_files(monkeypatch):
+@pytest.mark.parametrize("gnugo_fails", [False, True])
+def test_scoring_does_not_leave_temp_files(monkeypatch, gnugo_fails):
     engine, _ = _engine()
     paths = []
-    monkeypatch.setattr(engine, "call_gnugo", lambda path, cmd: paths.append(path) or "")
-    engine.send("final_score")
+
+    def fake_call_gnugo(path, cmd):
+        paths.append(path)
+        assert os.path.exists(path)  # still there while gnugo reads it
+        if gnugo_fails:
+            raise RuntimeError("gnugo crashed")
+        return ""
+
+    monkeypatch.setattr(engine, "call_gnugo", fake_call_gnugo)
+    if gnugo_fails:
+        with pytest.raises(RuntimeError):
+            engine.send("final_score")
+    else:
+        engine.send("final_score")
     [path] = paths
     assert not os.path.exists(path)
 
