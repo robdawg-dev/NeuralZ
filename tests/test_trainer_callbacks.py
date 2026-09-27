@@ -1,7 +1,7 @@
 """Unit tests for the trainer's helper functions and callbacks
 (AlphaGo/training/supervised_policy_trainer.py) - everything except run_training() itself,
-which test_trainer_integration.py drives end to end. LROverrideCallback and
-OptimizerStateCallback have their own files (test_lr_override.py, test_optimizer_state.py).
+which test_trainer_integration.py drives end to end. LROverrideCallback and the optimizer
+state save/restore have their own files (test_lr_override.py, test_optimizer_state.py).
 
 CPU-only; most tests use a stand-in model object, the rest a tiny Dense model.
 """
@@ -18,7 +18,6 @@ import keras
 from keras import layers
 from keras.callbacks import Callback, ReduceLROnPlateau
 from keras.optimizers import SGD
-from keras.optimizers.schedules import CosineDecay
 
 import AlphaGo.training.supervised_policy_trainer as trainer
 
@@ -134,32 +133,6 @@ def test_plateau_state_restorer_order_matters():
         cb.set_model(model)
         cb.on_train_begin()
     assert (plateau.wait, plateau.cooldown_counter) == (0, 0)
-
-
-# --- _ResumedLRSchedule ----------------------------------------------------------------
-
-def test_resumed_lr_schedule_shifts_by_offset():
-    base = CosineDecay(initial_learning_rate=1e-4, decay_steps=100, warmup_target=0.05,
-                       warmup_steps=10)
-    resumed = trainer._ResumedLRSchedule(base, offset=40)
-    for step in (0, 1, 5, 30, 69, 70, 200):
-        assert float(resumed(step)) == pytest.approx(float(base(step + 40)))
-
-
-def test_resumed_lr_schedule_continues_instead_of_rewarming():
-    """Step 0 of a resumed schedule is mid-decay, not back at warmup's start LR."""
-    base = CosineDecay(initial_learning_rate=1e-4, decay_steps=100, warmup_target=0.05,
-                       warmup_steps=10)
-    resumed = trainer._ResumedLRSchedule(base, offset=40)
-    assert float(resumed(0)) > 1e-3
-    assert float(resumed(0)) < 0.05
-
-
-def test_resumed_lr_schedule_get_config():
-    base = CosineDecay(initial_learning_rate=1e-4, decay_steps=100)
-    config = trainer._ResumedLRSchedule(base, offset=7).get_config()
-    assert config["offset"] == 7
-    assert config["base_schedule"] == base.get_config()
 
 
 # --- WarmupCallback --------------------------------------------------------------------
