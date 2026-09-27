@@ -420,20 +420,12 @@ cdef class GameState:
         if location == action_t.PASS:
             return True
 
-        # Check that location is on the board
-        if location < 0 or location >= self.board_size:
-            return False
-
-        # Check if it is empty
-        if d(self.board[location]).color > stone_t.EMPTY:
+        # On the board, empty, and not suicide
+        if not self.is_placeable(location):
             return False
 
         # Check ko (1 move back only)
         if location == self.ko:
-            return False
-
-        # Check if move is suicide
-        if not self.has_liberty_after(location):
             return False
 
         # (Maybe) check superko state
@@ -442,6 +434,22 @@ cdef class GameState:
 
         # If all of the above checks pass, then this move is legal.
         return True
+
+    cdef bool is_placeable(self, location_t location):
+        """Check that a stone of the current player can physically be placed at location: on
+           the board, on an empty point, and not suicide. Ko rules are not considered.
+        """
+
+        # Check that location is on the board
+        if location < 0 or location >= self.board_size:
+            return False
+
+        # Check if it is empty
+        if d(self.board[location]).color > stone_t.EMPTY:
+            return False
+
+        # Check if move is suicide
+        return self.has_liberty_after(location)
 
     cdef location_t add_stone(self, location_t location):
         """Play stone on location and update the state. MOVE MUST BE LEGAL. Returns new ko location,
@@ -608,11 +616,36 @@ cdef class GameState:
            IllegalMove exception is raised
         """
 
-        cdef location_t x, y, location
+        self.apply_move(action, color, True)
 
-        # Play as 'color' if given - for a pass as much as for a stone.
+    cpdef void record_move(self, tuple action, stone_t color=stone_t.EMPTY):
+        """Apply a move that an outside authority says was played - e.g. an opponent's move
+           reported by a GTP server - checking only that it can physically be placed: on the
+           board, on an empty point, and not suicide. Ko and superko are NOT checked, since
+           rulesets differ on them (KGS Japanese rules allow repeating a position, which
+           positional superko forbids) and the authority has already ruled the move legal.
+
+           Otherwise behaves like do_move(); raises IllegalMove if the stone can't be placed.
+        """
+
+        self.apply_move(action, color, False)
+
+    cdef void apply_move(self, tuple action, stone_t color, bool check_ko_rules):
+        """Shared body of do_move() and record_move(). A move that raises IllegalMove leaves
+           the state exactly as it was, including whose turn it is.
+        """
+
+        cdef location_t x, y, location
+        cdef location_t previous_ko = self.ko
+        cdef bool switched = False
+
+        # Play as 'color' if given - for a pass as much as for a stone. As in
+        # set_current_player(), a pending ko restriction belonged to the player whose turn it
+        # was, so it does not carry over to the other color.
         if color != stone_t.EMPTY and color != self.current_player:
             self.swap_players()
+            self.ko = -1
+            switched = True
 
         # Note: as per the python interface, 'None' is considerd a pass
         if action is None:
@@ -627,12 +660,18 @@ cdef class GameState:
             self.ko = -1
 
         else:
-            # Convert from tuple (x, y) input to 1d coordinate.
+            # Convert from tuple (x, y) input to 1d coordinate. Bounds are checked on (x, y)
+            # rather than on the 1d location: an off-board x would otherwise wrap onto the
+            # next row.
             (x, y) = action
             location = calculate_board_location(y, x, self.size)
-
-            # Check if move is legal.
-            if not self.is_legal_move(location):
+            if (x < 0 or y < 0 or x >= self.size or y >= self.size or
+                    not (self.is_legal_move(location) if check_ko_rules
+                         else self.is_placeable(location))):
+                # Undo the color switch above, so a rejected move changes nothing.
+                if switched:
+                    self.swap_players()
+                    self.ko = previous_ko
                 raise IllegalMove(str(action))
 
             # Execute move.
@@ -740,12 +779,14 @@ cdef class GameState:
     ############################################################################
 
     def is_end_of_game(self):
-        if self.moves_history.size() > 1:
-            if self.moves_history[self.moves_history.size() - 1] == action_t.PASS and \
-                    self.moves_history[self.moves_history.size() - 2] == action_t.PASS and \
-                    self.current_player == stone_t.WHITE:
-                return True
-        return False
+        """True once both players have passed in a row, in either order. Two passes by the
+           same color (possible over GTP) are not both players passing.
+        """
+        cdef size_t n = self.moves_history.size()
+        return (n > 1 and
+                self.moves_history[n - 1] == action_t.PASS and
+                self.moves_history[n - 2] == action_t.PASS and
+                self.moves_colors[n - 1] != self.moves_colors[n - 2])
 
     def is_legal(self, action):
         """Determine if the given action (x,y tuple) is a legal move

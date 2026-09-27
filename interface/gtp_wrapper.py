@@ -81,6 +81,28 @@ class ExtendedGtpEngine(gtp.Engine):
             # if can't get answer from GnuGo, return no result
             return ''
 
+    def cmd_play(self, arguments):
+        # Overrides gtp.Engine.cmd_play to record the move leniently - see
+        # GTPGameConnector.record_move.
+        move = gtp.parse_move(arguments)
+        if move:
+            color, vertex = move
+            if self.vertex_in_range(vertex) and self._game.record_move(color, vertex):
+                return
+        raise ValueError("illegal move")
+
+    def cmd_genmove(self, arguments):
+        # Overrides gtp.Engine.cmd_genmove, which ignores whether the engine accepted the
+        # generated move - it would report a move to the server that this engine never
+        # recorded, and the two boards would silently diverge. Fail loudly instead.
+        color = gtp.parse_color(arguments)
+        if not color:
+            raise ValueError("unknown player: {}".format(arguments))
+        move = self._game.get_move(color)
+        if not self._game.make_move(color, move):
+            raise ValueError("engine rejected its own move {}".format(gtp.gtp_vertex(move)))
+        return gtp.gtp_vertex(move)
+
     def cmd_time_left(self, arguments):
         pass
 
@@ -140,13 +162,22 @@ class GTPGameConnector(object):
         self._state = go.GameState(self._state.get_size(), enforce_superko=True)
 
     def make_move(self, color, vertex):
+        """Play a move under this engine's own rules (including positional superko) - for
+        the bot's own moves. Returns False, leaving the game unchanged, if it is illegal."""
+        return self._apply(self._state.do_move, color, vertex)
+
+    def record_move(self, color, vertex):
+        """Apply a move the controller reports as played. The server is the authority on
+        its own game's rules, so ko/superko aren't re-checked (KGS Japanese rules allow
+        repeating a position); only a move that can't physically be placed - an occupied
+        point, or suicide - returns False, leaving the game unchanged."""
+        return self._apply(self._state.record_move, color, vertex)
+
+    def _apply(self, move_fn, color, vertex):
+        # with its color: GTP lets either side move at any time, passes included
+        move = go.PASS if vertex == gtp.PASS else _gtp_to_engine(vertex, self._state.get_size())
         try:
-            if vertex == gtp.PASS:
-                # with its color: GTP lets either side move at any time, passes included
-                self._state.do_move(go.PASS, _GTP_TO_GO_COLOR[color])
-            else:
-                self._state.do_move(_gtp_to_engine(vertex, self._state.get_size()),
-                                    _GTP_TO_GO_COLOR[color])
+            move_fn(move, _GTP_TO_GO_COLOR[color])
             return True
         except go.IllegalMove:
             return False

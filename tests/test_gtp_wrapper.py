@@ -13,6 +13,7 @@ from AlphaGo import go
 from AlphaGo.util import sgf_to_gamestate
 from interface import gtp_wrapper
 from interface.gtp_wrapper import ExtendedGtpEngine, GTPGameConnector, run_gtp
+from tests import test_gamestate
 
 
 class ScriptedPlayer(object):
@@ -158,6 +159,57 @@ def test_handicap_sent_as_consecutive_black_moves_keeps_real_colors():
     assert [c for _m, c in game._state.get_history_with_colors()] == [
         go.BLACK, go.BLACK, go.WHITE, go.WHITE]
     assert game._state.get_current_player() == go.BLACK
+
+
+# --- server moves are recorded leniently, the bot's own moves checked strictly ------------
+
+def _gtp(point, size):
+    """Engine (x, y) -> GTP vertex string."""
+    x, y = point
+    return "ABCDEFGHJKLMNOPQRST"[x] + str(size - y)
+
+
+def _reach_superko_position(engine):
+    """Play TestKo's non-alternating superko sequence over GTP on 9x9: White to move,
+    and White retaking at engine (1, 1) - GTP B8 - would repeat an earlier position."""
+    engine.send("boardsize 9")
+    for move, color in test_gamestate.TestKo.NON_ALTERNATING_SUPERKO_MOVES:
+        vertex = "pass" if move is None else _gtp(move, 9)
+        name = "black" if color == go.BLACK else "white"
+        assert engine.send("play {} {}".format(name, vertex)) == _ok()
+
+
+def test_play_records_a_superko_repeat_the_server_allows():
+    """Under KGS Japanese rules repeating a position is legal. The server's word goes: the
+    engine must follow the real game even though its own positional superko forbids it."""
+    engine, game = _engine()
+    _reach_superko_position(engine)
+    assert not game._state.is_legal((1, 1))
+    assert engine.send("play white B8") == _ok()
+    assert game._state.get_board()[1][1] == go.WHITE
+
+
+def test_genmove_refuses_to_claim_a_move_the_engine_rejects():
+    engine, game = _engine(ScriptedPlayer([(1, 1)]))  # a superko repeat - illegal for us
+    _reach_superko_position(engine)
+    history = game._state.get_history_with_colors()
+    assert engine.send("genmove white") == _err("engine rejected its own move B8")
+    assert game._state.get_history_with_colors() == history
+
+
+def test_rejected_play_leaves_the_turn_unchanged():
+    engine, game = _engine()
+    engine.send("play black D4")
+    assert engine.send("play black D4") == _err("illegal move")  # occupied, out of turn
+    assert game._state.get_current_player() == go.WHITE
+
+
+def test_play_rejects_suicide():
+    engine, game = _engine()
+    engine.send("play black B1")
+    engine.send("play black A2")
+    assert engine.send("play white A1") == _err("illegal move")  # no liberties, no capture
+    assert len(game._state.get_history()) == 2
 
 
 @pytest.mark.parametrize("move", ["black D4", "black T20", "black Z1", "purple D4", "black"])

@@ -158,6 +158,119 @@ class TestKo(unittest.TestCase):
             "superko went undetected after two consecutive Black moves")
 
 
+def _standard_ko(**kwargs):
+    """White has just taken a ko at (1, 1), capturing Black's (2, 1): Black to move, and
+    Black may not retake at (2, 1) immediately. (Same position as TestKo.test_standard_ko.)"""
+    gs = GameState(size=9, **kwargs)
+    for move in [(1, 0), (2, 0), (0, 1), (3, 1), (1, 2), (2, 2), (2, 1), (1, 1)]:
+        gs.do_move(move)
+    return gs
+
+
+class TestRejectedMoves(unittest.TestCase):
+
+    def _snapshot(self, gs):
+        return (gs.get_current_player(), gs.get_history_with_colors(),
+                gs.get_ko_location(), sorted(gs.get_legal_moves()), gs.get_hash())
+
+    def test_rejected_out_of_turn_move_changes_nothing(self):
+        gs = _standard_ko()
+        before = self._snapshot(gs)
+        with self.assertRaises(go.IllegalMove):
+            gs.do_move((1, 1), go.WHITE)  # occupied, and not White's turn
+        self.assertEqual(self._snapshot(gs), before)
+
+    def test_rejected_move_in_turn_changes_nothing(self):
+        gs = _standard_ko()
+        before = self._snapshot(gs)
+        with self.assertRaises(go.IllegalMove):
+            gs.do_move((2, 1))  # Black retaking the ko at once
+        self.assertEqual(self._snapshot(gs), before)
+
+    def test_off_board_move_is_rejected_not_wrapped(self):
+        gs = GameState(size=9)
+        for move in [(9, 0), (0, 9), (-1, 3), (3, -1)]:
+            with self.assertRaises(go.IllegalMove):
+                gs.do_move(move)
+        self.assertEqual(gs.get_history(), [])
+
+    def test_ko_binds_only_the_player_to_move(self):
+        gs = _standard_ko()
+        self.assertFalse(gs.is_legal((2, 1)))  # Black can't retake yet
+        gs.do_move((2, 1), go.WHITE)  # but White, moving out of turn, may fill it
+        self.assertEqual(gs.get_board()[2][1], go.WHITE)
+
+
+class TestRecordMove(unittest.TestCase):
+
+    def test_records_a_ko_retake(self):
+        gs = _standard_ko()
+        gs.record_move((2, 1))
+        self.assertEqual(gs.get_history_with_colors()[-1], ((2, 1), go.BLACK))
+        self.assertEqual(gs.get_board()[1][1], go.EMPTY)  # the retake captured
+        self.assertEqual(gs.get_current_player(), go.WHITE)
+
+    def test_records_a_positional_superko_repeat(self):
+        gs = TestKo()._non_alternating_superko_state(enforce_superko=True)
+        self.assertFalse(gs.is_legal((1, 1)))
+        gs.record_move((1, 1), go.WHITE)
+        self.assertEqual(gs.get_board()[1][1], go.WHITE)
+        self.assertEqual(gs.get_board()[2][1], go.EMPTY)
+
+    def test_rejects_what_cannot_be_placed(self):
+        gs = GameState(size=9)
+        gs.do_move((1, 0))  # B
+        gs.do_move((5, 5))  # W
+        gs.do_move((0, 1))  # B - (0, 0) is now suicide for White
+        before = gs.get_history_with_colors()
+        for move in [(1, 0),   # occupied
+                     (0, 0),   # suicide
+                     (9, 9)]:  # off the board
+            with self.assertRaises(go.IllegalMove):
+                gs.record_move(move, go.WHITE)
+        self.assertEqual(gs.get_history_with_colors(), before)
+        self.assertEqual(gs.get_current_player(), go.WHITE)
+
+    def test_records_a_pass_with_its_color(self):
+        gs = GameState(size=9)
+        gs.record_move(None, go.WHITE)
+        self.assertEqual(gs.get_history_with_colors(), [(None, go.WHITE)])
+
+
+class TestEndOfGame(unittest.TestCase):
+
+    def _after(self, moves, handicap=()):
+        gs = GameState(size=9)
+        if handicap:
+            gs.place_handicaps(list(handicap))
+        for move, color in moves:
+            gs.do_move(move, color)
+        return gs.is_end_of_game()
+
+    def test_not_over_at_the_start(self):
+        self.assertFalse(self._after([]))
+
+    def test_black_then_white_pass_ends_the_game(self):
+        self.assertTrue(self._after([(None, go.BLACK), (None, go.WHITE)]))
+        self.assertTrue(self._after([((4, 4), go.BLACK), ((5, 5), go.WHITE),
+                                     (None, go.BLACK), (None, go.WHITE)]))
+
+    def test_white_then_black_pass_ends_the_game(self):
+        self.assertTrue(self._after([((4, 4), go.BLACK), (None, go.WHITE), (None, go.BLACK)]))
+
+    def test_passes_in_a_handicap_game(self):
+        self.assertTrue(self._after([(None, go.WHITE), (None, go.BLACK)], handicap=[(2, 2)]))
+
+    def test_one_pass_is_not_the_end(self):
+        self.assertFalse(self._after([((4, 4), go.BLACK), (None, go.WHITE)]))
+
+    def test_passes_separated_by_a_move_are_not_the_end(self):
+        self.assertFalse(self._after([(None, go.BLACK), ((4, 4), go.WHITE), (None, go.BLACK)]))
+
+    def test_two_passes_by_the_same_color_are_not_the_end(self):
+        self.assertFalse(self._after([(None, go.BLACK), (None, go.BLACK)]))
+
+
 class TestMoveColors(unittest.TestCase):
 
     def test_alternating_play_records_alternating_colors(self):

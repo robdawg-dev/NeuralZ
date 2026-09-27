@@ -119,6 +119,11 @@ cdef class GameState:
     """Check if playing at location is a legal move
     """
 
+    cdef bool is_placeable(self, location_t location)
+    """Check that a stone can physically be placed at location (on the board, empty, not
+       suicide), without considering ko rules
+    """
+
     cdef bool has_liberty_after(self, location_t location)
     """Check if a play at location results in an alive group
 
@@ -235,6 +240,15 @@ cdef class GameState:
 
        If it is a legal move, current_player switches to the opposite color. If not, an
        IllegalMove exception is raised
+    """
+
+    cpdef void record_move(self, tuple action, stone_t color=*)
+    """Apply a move an outside authority (e.g. a GTP server) says was played, checking only
+       that it can physically be placed - not ko or superko.
+    """
+
+    cdef void apply_move(self, tuple action, stone_t color, bool check_ko_rules)
+    """Shared body of do_move() and record_move()
     """
 
     cpdef void place_handicap_stone(self, tuple action, stone_t color=*)
