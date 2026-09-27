@@ -391,7 +391,9 @@ def _replay_plateau_state(epoch_logs, factor, patience, cooldown, min_lr, min_de
             wait = 0
         elif cooldown_counter == 0:
             wait += 1
-            if wait >= patience and old_lr > min_lr:
+            # float32, as ReduceLROnPlateau compares: the logged LR is the optimizer's
+            # float32 variable, which lands a hair above a plain-float min_lr once cut to it.
+            if wait >= patience and old_lr > np.float32(min_lr):
                 cooldown_counter = cooldown
                 wait = 0
     return best, wait, cooldown_counter
