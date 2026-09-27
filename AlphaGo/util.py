@@ -63,11 +63,12 @@ def sgf_to_gamestate(sgf_string):
     return gs
 
 
-def _sgf_point(point, size):
-    """SGF coordinate for an (x, y) point. Rows are written reversed (y=0 is the bottom
-    row), which _parse_sgf_move does not undo - see test_util.py's bug 3 test."""
+def _sgf_point(point):
+    """SGF coordinate for an (x, y) point - the inverse of _parse_sgf_move. GameState uses
+    SGF's own orientation (y=0 is the top row, 'a'), so neither axis is flipped; the GTP
+    wrapper converts GTP's bottom-up rows on the way in and out."""
     x, y = point
-    return '{}{}'.format(LETTERS[x], LETTERS[size - 1 - y]).lower()
+    return '{}{}'.format(LETTERS[x], LETTERS[y]).lower()
 
 
 def save_gamestate_to_sgf(gamestate, path, filename, black_player_name='Unknown',
@@ -91,7 +92,7 @@ def save_gamestate_to_sgf(gamestate, path, filename, black_player_name='Unknown'
         str_list.append('HA[{}]'.format(len(handicaps)))
         str_list.append('AB')
         for handicap in handicaps:
-            str_list.append('[{}]'.format(_sgf_point(handicap, size)))
+            str_list.append('[{}]'.format(_sgf_point(handicap)))
         # who moves first after the handicap (normally White)
         first_color = moves[0][1] if moves else gamestate.get_current_player()
         str_list.append('PL[{}]'.format('B' if first_color == go.BLACK else 'W'))
@@ -103,7 +104,7 @@ def save_gamestate_to_sgf(gamestate, path, filename, black_player_name='Unknown'
         if move is None:
             str_list.append('[tt]')
         else:
-            str_list.append('[{}]'.format(_sgf_point(move, size)))
+            str_list.append('[{}]'.format(_sgf_point(move)))
     str_list.append(')')
     with open(os.path.join(path, filename), "w") as f:
         f.write(''.join(str_list))

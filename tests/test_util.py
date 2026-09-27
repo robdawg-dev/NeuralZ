@@ -1,8 +1,7 @@
 """Tests for AlphaGo/util.py: SGF move/setup parsing, SGF export, and the heatmap plot.
 
 sgf_iter_states' handling of moveless and setup nodes is covered in test_pipeline_audit.py;
-this file covers the rest. Tests marked xfail pin the intended behavior of known bugs,
-to be decided and fixed separately.
+this file covers the rest.
 """
 import os
 
@@ -148,25 +147,25 @@ def test_saved_handicap_game_is_readable(tmp_path):
     assert reread.get_current_player() == go.WHITE
 
 
-BUG_3 = ("bug 3: save writes rows reversed (y=0 as the bottom row) but _parse_sgf_move "
-         "reads them unreversed - pending a decision on the coordinate convention")
+def test_save_writes_sgf_coordinates(tmp_path):
+    """Column letter then row letter, row 'a' at the top - the same orientation
+    _parse_sgf_move reads. (2, 16) is GTP C3 on 19x19, the 4-4 point (15, 3) is Q16."""
+    text = _saved(tmp_path, _played([(2, 16), (15, 3)]))
+    assert ";B[cq];W[pd]" in text
 
 
-@pytest.mark.xfail(strict=True, reason=BUG_3)
 def test_save_round_trips_moves(tmp_path):
     state = _played(ASYMMETRIC_MOVES)
     reread = sgf_to_gamestate(_saved(tmp_path, state))
     assert reread.get_history() == state.get_history()
 
 
-@pytest.mark.xfail(strict=True, reason=BUG_3)
 def test_save_round_trips_a_9x9_game(tmp_path):
     state = _played([(0, 0), (8, 1), (4, 6)], size=9)
     reread = sgf_to_gamestate(_saved(tmp_path, state))
     assert reread.get_history() == state.get_history()
 
 
-@pytest.mark.xfail(strict=True, reason=BUG_3)
 def test_save_round_trips_a_handicap_game(tmp_path):
     state = _played([(9, 9), (2, 5)], handicaps=[(3, 3), (15, 15)])
     reread = sgf_to_gamestate(_saved(tmp_path, state))

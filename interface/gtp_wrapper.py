@@ -30,6 +30,21 @@ def _log_gtp_command(cmd):
 _GTP_TO_GO_COLOR = {gtp.BLACK: go.BLACK, gtp.WHITE: go.WHITE}
 
 
+# GTP vertices are 1-indexed with row 1 at the BOTTOM of the board. GameState uses SGF's
+# orientation, the one all training data is read in: 0-indexed with y=0 the TOP row (SGF
+# row 'a'). So the column only shifts by one while the row is inverted - e.g. on 19x19
+# GTP C3 is (2, 16), written to SGF as [cq]. This keeps a position arriving over GTP
+# oriented exactly as it would be read from that game's SGF record.
+def _gtp_to_engine(vertex, size):
+    (x, y) = vertex
+    return (x - 1, size - y)
+
+
+def _engine_to_gtp(point, size):
+    (x, y) = point
+    return (x + 1, size - y)
+
+
 def run_gnugo(sgf_file_name, command):
     if shutil.which('gnugo'):
         from subprocess import Popen, PIPE
@@ -125,14 +140,13 @@ class GTPGameConnector(object):
         self._state = go.GameState(self._state.get_size(), enforce_superko=True)
 
     def make_move(self, color, vertex):
-        # vertex in GTP language is 1-indexed, whereas GameState's are zero-indexed
         try:
             if vertex == gtp.PASS:
                 # with its color: GTP lets either side move at any time, passes included
                 self._state.do_move(go.PASS, _GTP_TO_GO_COLOR[color])
             else:
-                (x, y) = vertex
-                self._state.do_move((x - 1, y - 1), _GTP_TO_GO_COLOR[color])
+                self._state.do_move(_gtp_to_engine(vertex, self._state.get_size()),
+                                    _GTP_TO_GO_COLOR[color])
             return True
         except go.IllegalMove:
             return False
@@ -149,8 +163,7 @@ class GTPGameConnector(object):
         if move == go.PASS:
             return gtp.PASS
         else:
-            (x, y) = move
-            return (x + 1, y + 1)
+            return _engine_to_gtp(move, self._state.get_size())
 
     def get_current_state_as_sgf(self):
         """Writes the game to a new temp file and returns its path; the caller deletes it.
@@ -163,11 +176,8 @@ class GTPGameConnector(object):
         return path
 
     def place_handicaps(self, vertices):
-        actions = []
-        for vertex in vertices:
-            (x, y) = vertex
-            actions.append((x - 1, y - 1))
-        self._state.place_handicaps(actions)
+        size = self._state.get_size()
+        self._state.place_handicaps([_gtp_to_engine(vertex, size) for vertex in vertices])
 
 
 def run_gtp(player_obj, inpt_fn=None, name="Gtp Player", version="0.0"):
