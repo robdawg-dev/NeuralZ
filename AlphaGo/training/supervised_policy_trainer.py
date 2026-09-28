@@ -16,9 +16,6 @@ from keras.optimizers.schedules import CosineDecay
 from keras.callbacks import (
     ModelCheckpoint, Callback, ReduceLROnPlateau)
 from AlphaGo.models.policy import CNNPolicy
-# Imported only to register ResTowerPolicy, so CNNPolicy.load_model() can find it by the
-# "class" name in a model JSON.
-import AlphaGo.models.resnet_tower_policy  # noqa: F401
 from AlphaGo.training.shard_stream import (
     BATCH_TRANSFORMATIONS, find_split_shards, dataset_info, shard_batch_generator,
     validation_arrays)

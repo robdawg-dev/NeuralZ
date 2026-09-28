@@ -7,7 +7,6 @@ import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 from AlphaGo.models.nn_util import NeuralNetBase
-import AlphaGo.models.resnet_tower_policy  # noqa: F401 (registers CNNPolicy + ResTowerPolicy)
 from interface.gtp_wrapper import run_gtp
 from AlphaGo.ai import ProbabilisticPolicyPlayer
 

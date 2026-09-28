@@ -66,7 +66,6 @@ def main():
         os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     import numpy as np
     from AlphaGo.models.nn_util import NeuralNetBase
-    import AlphaGo.models.resnet_tower_policy  # noqa: F401 (registers ResTowerPolicy)
 
     policy = NeuralNetBase.load_model(args.model)
     policy.model.load_weights(args.weights)

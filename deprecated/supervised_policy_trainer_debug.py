@@ -27,7 +27,7 @@ from AlphaGo.models.policy import CNNPolicy  # noqa: E402
 # decorator) so CNNPolicy.load_model() can find it by name in a model.json's "class"
 # field - registration only happens when a class's defining module is actually imported
 # somewhere in the process, and nothing else here pulls this one in.
-import AlphaGo.models.resnet_tower_policy  # noqa: E402,F401
+import AlphaGo.models.policy  # noqa: E402,F401
 from shuffle_buffer import (  # noqa: E402
     BOARD_TRANSFORMATIONS, find_shard_files, build_game_index, get_or_create_game_split,
     shuffle_buffer_batch_generator, build_validation_arrays)

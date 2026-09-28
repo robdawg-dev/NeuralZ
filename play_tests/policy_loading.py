@@ -7,7 +7,6 @@ can't drift out of sync with each other about where these models actually live.
 import os
 
 from AlphaGo.models.nn_util import NeuralNetBase
-import AlphaGo.models.resnet_tower_policy  # noqa: F401 (registers CNNPolicy + ResTowerPolicy)
 
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
 
@@ -94,7 +93,7 @@ MODEL_SPECS = {
     },
     "b15c192": {
         # ResTowerPolicy, 15 blocks x 192 filters (this project's original/default
-        # architecture size - see resnet_tower_policy.py's own class defaults), with
+        # architecture size - see ResTowerPolicy's own class defaults), with
         # the same conv_norm head as the b10c128* family. Trained via
         # supervised_policy_trainer_v3.py (now in deprecated/) with matched seed (90001) and matched
         # game_split.json (copied from b10c128mb1024's own run directory) against

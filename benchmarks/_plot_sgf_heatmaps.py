@@ -27,10 +27,6 @@ import numpy as np
 from AlphaGo import go
 from AlphaGo.util import sgf_iter_states, plot_network_output, flatten_idx
 from AlphaGo.models.policy import CNNPolicy
-# Unused directly, but importing it registers ResTowerPolicy (via the @neuralnet
-# decorator) so CNNPolicy.load_model() can find it by name in a model.json's "class"
-# field - same reason every trainer script here imports this and never references it.
-import AlphaGo.models.resnet_tower_policy  # noqa: F401
 
 
 class _BoardView:

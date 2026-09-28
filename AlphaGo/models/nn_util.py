@@ -63,12 +63,7 @@ class NeuralNetBase(object):
 
         # Create object; may be a subclass of networks saved in specs['class']
         class_name = object_specs.get('class', 'CNNPolicy')
-        try:
-            network_class = NeuralNetBase.subclasses[class_name]
-        except KeyError:
-            raise ValueError("Unknown neural network type in json file: {}\n"
-                             "(was it registered with the @neuralnet decorator?)"
-                             .format(class_name))
+        network_class = _registered_class(class_name)
 
         # create new object
         new_net = network_class(object_specs['feature_list'], init_network=False)
@@ -122,7 +117,7 @@ class NeuralNetBase(object):
         non-uniform move-probability output, not e.g. all-uniform/garbage) against
         Data/Mamifreak's 48-plane/192-filter/12-layer policy network.
 
-        Only supports the plain CNNPolicy/ResnetPolicy-style stack this repo has always
+        Only supports the plain CNNPolicy-style stack this repo has always
         produced (N x Conv2D, then a final 1-filter/1x1 Conv2D, Flatten, Bias, softmax
         Activation) - raises ValueError if the file doesn't look like that, rather than
         silently building the wrong architecture.
@@ -131,12 +126,7 @@ class NeuralNetBase(object):
             object_specs = json.load(f)
 
         class_name = object_specs.get('class', 'CNNPolicy')
-        try:
-            network_class = NeuralNetBase.subclasses[class_name]
-        except KeyError:
-            raise ValueError("Unknown neural network type in json file: {}\n"
-                             "(was it registered with the @neuralnet decorator?)"
-                             .format(class_name))
+        network_class = _registered_class(class_name)
 
         keras_config = json.loads(object_specs['keras_model'])
         layer_configs = keras_config['config']
@@ -208,6 +198,20 @@ def neuralnet(cls):
     """
     NeuralNetBase.subclasses[cls.__name__] = cls
     return cls
+
+
+def _registered_class(class_name):
+    """The model class a model JSON names by its "class" entry. The classes register
+    themselves (@neuralnet) when policy.py is imported, so it's imported here - any script
+    can load a model without importing it first. Imported inside the function because
+    policy.py imports this module."""
+    import AlphaGo.models.policy  # noqa: F401
+    try:
+        return NeuralNetBase.subclasses[class_name]
+    except KeyError:
+        raise ValueError("Unknown neural network type in json file: {}\n"
+                         "(was it registered with the @neuralnet decorator?)"
+                         .format(class_name))
 
 
 class Bias(Layer):
