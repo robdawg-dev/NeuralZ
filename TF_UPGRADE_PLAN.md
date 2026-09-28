@@ -39,8 +39,9 @@ Two phases, each a separately verified change:
   former `val` shards, `workspace/upgrade_refs/data/` (`train/` 2 shards, `val/` 1). (The
   original `prod_40m` train shards were deleted as no longer needed.) Results for each image
   are in `workspace/upgrade_refs/train_<image tag>/metadata.json`.
-- **Rollback images:** `neuralz-gpu:tf2.21-py311` (the old official-image build);
-  `neuralz-gpu:py313` (phase 1).
+- **Images:** `neuralz-gpu:latest` = `neuralz-gpu:keras315` (current). Rollback:
+  `neuralz-gpu:py313` (phase 1, Keras 3.13.2) and `neuralz-gpu:tf2.21-py311` (the old
+  official-image build).
 
 ---
 
@@ -119,6 +120,31 @@ test: at float32 minibatch 1024, the run without the flag asked for 17.7 GB and 
 
 ---
 
+## Keras 3.15.1 and a dependency refresh, still on TF 2.21.0 (done 2026-09-27)
+
+- **Keras 3.13.2 → 3.15.1**, and a full `uv lock --upgrade`: numpy 2.4.6 → 2.5.3, gast 0.4.0 →
+  0.7.0, grpcio 1.83.1 → 1.84.0, wrapt 2.4.0 → 2.5.0, and patch updates (protobuf, idna,
+  urllib3, pyparsing, fonttools).
+- **Not upgraded:**
+  - h5py stays at 3.14.0: TF 2.21 caps it below 3.15.
+  - pygtp stays at 0.3. 0.4 (2017) only adds a resign constant and lowercases `PASS`, which
+    would mean adjusting the GTP wrapper for no benefit.
+- **Trainer fix needed first:** from Keras 3.15, `ReduceLROnPlateau.on_train_begin()` also resets
+  `best` to `None`. The trainer used to set a resumed `best` before `fit()`, relying on 3.13
+  never resetting it, so a resumed plateau run would have treated its first epoch as an
+  automatic improvement. `_PlateauStateRestorer` now re-applies `best` along with
+  `wait`/`cooldown_counter` (correct on both versions), and a test mimics the 3.15 reset.
+
+| Check | Result |
+|---|---|
+| Test suite | 356 passed |
+| Bot model, CPU | still bit-for-bit identical to the original image |
+| Bot model, GPU | unchanged from phase 1 (max diff 5.95e-4, identical top moves) |
+| GTP smoke test | clean |
+| Training, 3 epochs | loss, accuracy, val_loss, val_accuracy and entropy identical to 4 decimals vs Keras 3.13.2; epochs 2–3 1.97 vs 1.91 steps/s (noise) |
+
+---
+
 ## Phase 2: TensorFlow 2.22 (once 2.22.0 final is out)
 
 ### Known so far (from 2.22.0rc0, 2026-09-23; recheck on the final)
@@ -129,7 +155,7 @@ test: at float32 minibatch 1024, the run without the flag asked for 17.7 GB and 
 - **rc0 depends on `keras-nightly`,** so wait for the final, which should pin a stable Keras.
 
 ### Steps
-- [ ] Tag the phase 1 image for rollback (`neuralz-gpu:py313` already exists).
+- [ ] Keep the current image for rollback (it's already tagged `neuralz-gpu:keras315`).
 - [ ] **Decide the Python version:** stay on 3.13, or move to 3.14 only if every compiled
   dependency in the new lock has 3.14 builds. As of 2026-09-27 h5py 3.14 doesn't, and TF caps
   h5py below 3.15. Fall back to 3.13 rather than loosening that pin.

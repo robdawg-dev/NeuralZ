@@ -5,10 +5,10 @@ requires-python = ">=3.13"
 dependencies = [
     "cython>=3.3.0",
     "h5py>=3.11.0,<3.15.0",
-    # Pinned to the version the trained models were produced with (the official
-    # tensorflow:2.21.0-gpu image's), rather than left to float with TF's own
-    # "keras>=3.12.0" - a Keras change is verified on its own (TF_UPGRADE_PLAN.md).
-    "keras==3.13.2",
+    # Pinned rather than left to float with TF's own "keras>=3.12.0": a Keras change can
+    # alter training behavior and model loading, so each bump is verified on its own
+    # (TF_UPGRADE_PLAN.md). The trained models were produced with 3.13.2.
+    "keras==3.15.1",
     "sgf==0.5",
     "tensorflow==2.21.0",
 ]
