@@ -431,24 +431,27 @@ def _replay_plateau_state(epoch_logs, factor, patience, cooldown, min_lr, min_de
 
 
 class _PlateauStateRestorer(Callback):
-    """Re-applies a resumed wait/cooldown_counter onto a ReduceLROnPlateau callback.
+    """Re-applies a resumed best/wait/cooldown_counter onto a ReduceLROnPlateau callback.
 
-    ReduceLROnPlateau.on_train_begin() unconditionally resets wait and cooldown_counter
-    to 0 (unlike best, which on_train_begin never touches) - so setting them on the
-    plateau callback before model.fit() starts would just get silently overwritten the
-    moment training begins. Keras calls on_train_begin on every callback in list order,
-    once per model.fit() call, so placing an instance of this AFTER the plateau
-    callback in the callbacks list makes it run second, re-applying the resumed values
-    right after the plateau callback's own reset.
+    ReduceLROnPlateau.on_train_begin() resets its state, so setting it on the plateau
+    callback before model.fit() starts would just get silently overwritten the moment
+    training begins. What it resets depends on the Keras version: wait and
+    cooldown_counter always, and since Keras 3.15 best as well (set to None, which makes
+    the first epoch an automatic "improvement"). Keras calls on_train_begin on every
+    callback in list order, once per model.fit() call, so placing an instance of this
+    AFTER the plateau callback in the callbacks list makes it run second, re-applying all
+    three resumed values right after the plateau callback's own reset.
     """
 
-    def __init__(self, plateau_cb, wait, cooldown_counter):
+    def __init__(self, plateau_cb, best, wait, cooldown_counter):
         super().__init__()
         self.plateau_cb = plateau_cb
+        self.best = best
         self.wait = wait
         self.cooldown_counter = cooldown_counter
 
     def on_train_begin(self, logs=None):
+        self.plateau_cb.best = self.best
         self.plateau_cb.wait = self.wait
         self.plateau_cb.cooldown_counter = self.cooldown_counter
 
@@ -900,8 +903,8 @@ def run_training(cmd_line_args=None):
         # skipped entirely on a resume (it only makes sense for a genuinely fresh start).
         # ReduceLROnPlateau's own best/wait/cooldown_counter bookkeeping isn't optimizer
         # state, so it's replayed from the metadata history instead - see
-        # _replay_plateau_state. best doesn't reset on on_train_begin (only wait/cooldown
-        # do), but all three are set explicitly here for clarity.
+        # _replay_plateau_state, and re-applied at the start of fit() by
+        # _PlateauStateRestorer.
         if resume and meta_writer.metadata["epochs"]:
             resumed_best, resumed_wait, resumed_cooldown = _replay_plateau_state(
                 meta_writer.metadata["epochs"], args.plateau_factor, args.plateau_patience,
@@ -919,14 +922,12 @@ def run_training(cmd_line_args=None):
         lr_override_cb = LROverrideCallback(
             args.out_directory, warmup_cb=warmup_cb, verbose=args.verbose)
         if resumed_best is not None:
-            plateau_cb.best = resumed_best
-            # wait/cooldown_counter can't just be set here - ReduceLROnPlateau's own
-            # on_train_begin() would reset them to 0 the moment model.fit() starts (it
-            # never touches best, so that one alone is safe to set directly). See
-            # _PlateauStateRestorer: placed after plateau_cb in the callbacks list below,
-            # so its on_train_begin re-applies these right after that reset happens.
+            # Can't just be set on plateau_cb here - its own on_train_begin() resets them
+            # the moment model.fit() starts. See _PlateauStateRestorer: placed after
+            # plateau_cb in the callbacks list below, so its on_train_begin re-applies
+            # them right after that reset happens.
             plateau_state_restorer = _PlateauStateRestorer(
-                plateau_cb, resumed_wait, resumed_cooldown)
+                plateau_cb, resumed_best, resumed_wait, resumed_cooldown)
             if args.verbose:
                 print("resuming plateau state: best={:.4f} wait={}/{} cooldown_counter={}"
                       .format(resumed_best, resumed_wait, args.plateau_patience,

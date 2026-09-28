@@ -102,37 +102,50 @@ def test_replay_plateau_state_empty_history():
 
 # --- _PlateauStateRestorer -------------------------------------------------------------
 
-def test_plateau_state_restorer_survives_on_train_begin_reset():
-    """ReduceLROnPlateau.on_train_begin() zeroes wait/cooldown_counter; the restorer,
-    placed after it, must put the resumed values back before the first epoch."""
-    model = make_model()
-    plateau = ReduceLROnPlateau(monitor="val_loss", patience=5, cooldown=2)
-    restorer = trainer._PlateauStateRestorer(plateau, wait=3, cooldown_counter=1)
+class _ResetsBestPlateau(ReduceLROnPlateau):
+    """ReduceLROnPlateau as of Keras 3.15, whose on_train_begin() also resets best - so
+    the restorer is tested against that behavior whichever Keras is installed."""
 
+    def _reset(self):
+        super()._reset()
+        self.best = None
+
+
+def _state_at_first_epoch(plateau, restorer):
     seen = {}
 
     class Probe(Callback):
         def on_epoch_begin(self, epoch, logs=None):
             if epoch == 0:
-                seen["state"] = (plateau.wait, plateau.cooldown_counter)
+                seen["state"] = (plateau.best, plateau.wait, plateau.cooldown_counter)
 
     x = np.zeros((8, 4), np.float32)
     y = np.zeros((8, 3), np.float32)
-    model.fit(x, y, epochs=1, batch_size=8, validation_data=(x, y), verbose=0,
-              callbacks=[plateau, restorer, Probe()])
-    assert seen["state"] == (3, 1)
+    make_model().fit(x, y, epochs=1, batch_size=8, validation_data=(x, y), verbose=0,
+                     callbacks=[plateau, restorer, Probe()])
+    return seen["state"]
+
+
+@pytest.mark.parametrize("plateau_class", [ReduceLROnPlateau, _ResetsBestPlateau])
+def test_plateau_state_restorer_survives_on_train_begin_reset(plateau_class):
+    """ReduceLROnPlateau.on_train_begin() resets its state (wait/cooldown_counter, and on
+    newer Keras best too); the restorer, placed after it, must put all the resumed
+    values back before the first epoch."""
+    plateau = plateau_class(monitor="val_loss", patience=5, cooldown=2)
+    restorer = trainer._PlateauStateRestorer(plateau, best=1.25, wait=3, cooldown_counter=1)
+    assert _state_at_first_epoch(plateau, restorer) == (1.25, 3, 1)
 
 
 def test_plateau_state_restorer_order_matters():
     """The same restorer placed BEFORE the plateau callback is wiped out - documents why
     run_training appends it after plateau_cb."""
     model = make_model()
-    plateau = ReduceLROnPlateau(monitor="val_loss", patience=5, cooldown=2)
-    restorer = trainer._PlateauStateRestorer(plateau, wait=3, cooldown_counter=1)
+    plateau = _ResetsBestPlateau(monitor="val_loss", patience=5, cooldown=2)
+    restorer = trainer._PlateauStateRestorer(plateau, best=1.25, wait=3, cooldown_counter=1)
     for cb in (restorer, plateau):
         cb.set_model(model)
         cb.on_train_begin()
-    assert (plateau.wait, plateau.cooldown_counter) == (0, 0)
+    assert (plateau.best, plateau.wait, plateau.cooldown_counter) == (None, 0, 0)
 
 
 # --- WarmupCallback --------------------------------------------------------------------
