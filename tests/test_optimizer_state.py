@@ -128,7 +128,7 @@ def test_checkpoint_without_optimizer_state_raises(tmp_path):
 
 
 def test_weights_only_leaves_the_optimizer_fresh(tmp_path):
-    """--lr-range-test: the checkpoint's weights, but a fresh optimizer."""
+    """An LR range test warm start: the checkpoint's weights, but a fresh optimizer."""
     model, path = checkpoint(tmp_path)
     resumed = make_model()
     trainer.load_checkpoint(resumed, path, with_optimizer=False)

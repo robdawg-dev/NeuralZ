@@ -37,7 +37,7 @@ The pipeline before `convert_shuffled.py`. Superseded by the one described in
 | `shuffle_buffer.py` | `AlphaGo/training/shard_stream.py` |
 | `supervised_policy_trainer_v3.py` | v4: `AlphaGo/training/supervised_policy_trainer.py` |
 | `supervised_policy_trainer_debug.py` | nothing - see below |
-| `lr_testing_trainer.py` | v4's `--lr-range-test` |
+| `lr_testing_trainer.py` | `AlphaGo/training/lr_range_test.py` |
 
 The converters wrote each game as a contiguous block of rows, with a `file_offsets` group
 mapping every SGF to its `(start, length)`. `shuffle_buffer.py` used those offsets to split
@@ -66,4 +66,7 @@ The two side-branch trainers:
   into v4 if that investigation is reopened.
 - `lr_testing_trainer.py` found the LR ceiling with an uncapped warmup ramp that stopped
   once weight_norm passed a multiple of its starting value. v4's `--lr-range-test`
-  replaced it and deliberately drops that auto-stop, which gave misleading verdicts.
+  replaced it and deliberately drops that auto-stop, which gave misleading verdicts. That
+  mode has since moved out of the trainer into `AlphaGo/training/lr_range_test.py`, which
+  builds its runs from the trainer's own pipeline functions so the two can't drift apart
+  the way this copy did.

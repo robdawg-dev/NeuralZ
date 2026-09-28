@@ -1,5 +1,6 @@
-"""Unit tests for the trainer's helper functions and callbacks
-(AlphaGo/training/supervised_policy_trainer.py) - everything except run_training() itself,
+"""Unit tests for the trainer's helper functions and callbacks, and the LR range test's
+(AlphaGo/training/supervised_policy_trainer.py, lr_range_test.py) - everything except the
+entry points themselves (run_training(), run_range_test()),
 which test_trainer_integration.py drives end to end. LROverrideCallback and the optimizer
 state save/restore have their own files (test_lr_override.py, test_optimizer_state.py).
 
@@ -19,6 +20,7 @@ from keras import layers
 from keras.callbacks import Callback, ReduceLROnPlateau
 from keras.optimizers import SGD
 
+import AlphaGo.training.lr_range_test as range_test
 import AlphaGo.training.supervised_policy_trainer as trainer
 
 
@@ -211,8 +213,8 @@ def test_warmup_zero_steps_sets_target_once():
 
 def _range_sequence():
     model = fake_model()
-    cb = trainer.RangeTestLRCallback(warmup_steps=4, warmup_start_lr=1e-4, floor_lr=1e-3,
-                                     ceiling_lr=1.0, total_steps=14)
+    cb = range_test.RangeTestLRCallback(warmup_steps=4, warmup_start_lr=1e-4, floor_lr=1e-3,
+                                        ceiling_lr=1.0, total_steps=14)
     cb.set_model(model)
     return lr_sequence(cb, model, 18)
 
@@ -241,7 +243,7 @@ def test_range_test_clamps_at_ceiling_past_total_steps():
 def test_range_diagnostics_logs_every_nth_step(tmp_path):
     model = make_model(lr=0.2)
     out = tmp_path / "step_diagnostics.jsonl"
-    cb = trainer.RangeTestDiagnosticsCallback(check_every=3, out_path=str(out))
+    cb = range_test.RangeTestDiagnosticsCallback(check_every=3, out_path=str(out))
     cb.set_model(model)
     for i in range(7):
         cb.on_train_batch_end(i, {"loss": 1.5, "grad_norm": 2.0})
@@ -258,7 +260,7 @@ def test_range_diagnostics_logs_every_nth_step(tmp_path):
 
 def test_range_diagnostics_tolerates_missing_logs(tmp_path):
     out = tmp_path / "step_diagnostics.jsonl"
-    cb = trainer.RangeTestDiagnosticsCallback(check_every=1, out_path=str(out))
+    cb = range_test.RangeTestDiagnosticsCallback(check_every=1, out_path=str(out))
     cb.set_model(make_model())
     cb.on_train_batch_end(0, None)
     cb.on_train_end()

@@ -1,6 +1,7 @@
-"""End-to-end tests for run_training() (AlphaGo/training/supervised_policy_trainer.py):
-real CLI args, real shards (built from synthetic games by convert_shuffled), a tiny
-one-layer policy, a few steps per epoch on CPU.
+"""End-to-end tests for run_training() (AlphaGo/training/supervised_policy_trainer.py) and
+run_range_test() (AlphaGo/training/lr_range_test.py): real CLI args, real shards (built
+from synthetic games by convert_shuffled), a tiny one-layer policy, a few steps per epoch
+on CPU.
 
 Marked slow: every run_training() call compiles with XLA (jit_compile=True), which takes a
 few seconds on CPU. Deselect with `pytest -m "not slow"`.
@@ -16,6 +17,7 @@ import h5py
 import pytest
 from keras import mixed_precision
 
+import AlphaGo.training.lr_range_test as range_test
 import AlphaGo.training.supervised_policy_trainer as trainer
 from AlphaGo.models.policy import CNNPolicy
 from tests.test_convert_shuffled import FEATURES, _run, _selection
@@ -26,9 +28,10 @@ pytestmark = pytest.mark.slow
 MINIBATCH = 16
 EPOCH_LENGTH = 64
 STEPS_PER_EPOCH = EPOCH_LENGTH // MINIBATCH
-COMMON = ["--minibatch", str(MINIBATCH), "--epoch-length", str(EPOCH_LENGTH),
-          "--validation-length", "32", "--warmup-steps", "2", "--learning-rate", "0.05",
-          "--seed", "1"]
+# What every run takes (add_run_arguments), and what only training adds.
+RUN_ARGS = ["--minibatch", str(MINIBATCH), "--epoch-length", str(EPOCH_LENGTH),
+            "--validation-length", "32", "--seed", "1"]
+TRAIN_ARGS = RUN_ARGS + ["--warmup-steps", "2", "--learning-rate", "0.05"]
 
 
 @pytest.fixture(autouse=True)
@@ -55,13 +58,17 @@ def data(tmp_path_factory):
     return _model_json(tmp / "model.json", FEATURES.split(",")), shards
 
 
-def _args(data, out_dir, *extra):
+def _args(data, out_dir, *extra, common=TRAIN_ARGS):
     model_json, shards = data
-    return [model_json, shards, str(out_dir)] + COMMON + list(extra)
+    return [model_json, shards, str(out_dir)] + common + list(extra)
 
 
 def _train(data, out_dir, *extra):
     trainer.run_training(_args(data, out_dir, *extra))
+
+
+def _range_test(data, out_dir, *extra):
+    range_test.run_range_test(_args(data, out_dir, *extra, common=RUN_ARGS))
 
 
 class _Interrupted(Exception):
@@ -260,9 +267,9 @@ def test_resume_rejects_changed_settings(data, stopped, flag, value):
 
 def test_lr_range_test_writes_step_diagnostics(data, tmp_path):
     out = tmp_path / "range"
-    _train(data, out, "--epochs", "2", "--lr-range-test", "--range-check-every", "1",
-           "--range-warmup-steps", "2", "--range-floor-lr", "1e-3",
-           "--range-ceiling-lr", "0.5")
+    _range_test(data, out, "--epochs", "2", "--range-check-every", "1",
+                "--range-warmup-steps", "2", "--range-floor-lr", "1e-3",
+                "--range-ceiling-lr", "0.5")
     with open(str(out / "step_diagnostics.jsonl")) as f:
         records = [json.loads(line) for line in f]
     assert [r["step"] for r in records] == list(range(2 * STEPS_PER_EPOCH))
@@ -278,11 +285,47 @@ def test_lr_range_test_writes_step_diagnostics(data, tmp_path):
 
 def test_lr_range_test_warm_start_takes_weights_but_a_fresh_optimizer(data, tmp_path):
     out = tmp_path / "range"
-    range_args = ("--lr-range-test", "--range-check-every", "1", "--range-warmup-steps", "2")
-    _train(data, out, "--epochs", "1", *range_args)
-    _train(data, out, "--epochs", "2", "--weights", "weights.00001.weights.h5", *range_args)
+    range_args = ("--range-check-every", "1", "--range-warmup-steps", "2")
+    _range_test(data, out, "--epochs", "1", *range_args)
+    _range_test(data, out, "--epochs", "2", "--weights", "weights.00001.weights.h5",
+                *range_args)
     # The warm-started sweep's optimizer began again at step 0, not at the first run's end.
     assert _checkpoint_iterations(out, 2) == STEPS_PER_EPOCH
+
+
+def test_range_test_warm_start_from_a_training_run(data, cosine_run, tmp_path):
+    """A sweep can warm-start from a training run's checkpoint in the same directory."""
+    out = tmp_path / "from_training"
+    shutil.copytree(str(cosine_run), str(out))
+    _range_test(data, out, "--epochs", "4", "--weights", "weights.00003.weights.h5",
+                "--range-check-every", "1")
+    assert _checkpoint_iterations(out, 4) == STEPS_PER_EPOCH
+
+
+def test_range_test_rejects_training_only_options(data, tmp_path):
+    with pytest.raises(SystemExit):
+        _range_test(data, tmp_path / "out", "--lr-schedule", "plateau")
+
+
+def test_training_and_range_test_build_identical_runs(data, tmp_path):
+    """The point of sharing the pipeline: from the same run arguments, a training run and
+    an LR range test get the same model initialization, the same training batches and the
+    same validation set - an LR found by one applies to the other."""
+    runs = []
+    for name, module, common in [("train", trainer, TRAIN_ARGS),
+                                 ("range", range_test, RUN_ARGS)]:
+        args = module.build_parser().parse_args(
+            _args(data, tmp_path / name, "--epochs", "1", common=common))
+        runs.append(trainer.set_up_run(args, (), require_latest_checkpoint=False))
+    a, b = runs
+    assert (a.steps_per_epoch, a.total_steps) == (b.steps_per_epoch, b.total_steps)
+    for wa, wb in zip(a.model.get_weights(), b.model.get_weights()):
+        assert (wa == wb).all()
+    for _ in range(3):
+        (xa, ya), (xb, yb) = next(a.train_data_generator), next(b.train_data_generator)
+        assert (xa == xb).all() and (ya == yb).all()
+    for (xa, ya), (xb, yb) in zip(a.val_dataset, b.val_dataset):
+        assert (xa.numpy() == xb.numpy()).all() and (ya.numpy() == yb.numpy()).all()
 
 
 # --- other argument guards -------------------------------------------------------------
