@@ -302,14 +302,14 @@ def add_run_arguments(parser):
     parser.add_argument("train_data", help="Output directory of convert_shuffled.py, containing train/ and val/ shard subdirectories")  # noqa: E501
     parser.add_argument("out_directory", help="directory where metadata and weights will be saved")
     # frequently used args
-    parser.add_argument("--minibatch", "-B", help="Size of training data minibatches. Default: 256", type=int, default=256)  # noqa: E501
-    parser.add_argument("--epochs", "-E", help="Total number of iterations on the data across the WHOLE run, including any epochs already completed before a --weights resume (not additional epochs on top of those) - this also shapes the learning rate curve's horizon. Default: 20", type=int, default=20)  # noqa: E501
-    parser.add_argument("--epoch-length", "-l", help="Number of training examples considered 'one epoch'. Default: # training data", type=int, default=None)  # noqa: E501
+    parser.add_argument("--minibatch", "-B", type=int, required=True, help="Size of training data minibatches - as large as GPU memory allows; the learning rate is tuned per minibatch size.")  # noqa: E501
+    parser.add_argument("--epochs", "-E", type=int, required=True, help="Total number of epochs across the WHOLE run, including any already completed before a --weights resume (not additional epochs on top of those) - this also sets the horizon of a cosine learning rate schedule or LR range test sweep.")  # noqa: E501
+    parser.add_argument("--steps-per-epoch", type=int, default=None, help="Minibatch steps per epoch. An epoch is when validation runs and a checkpoint and metadata.json entry are written; --epochs and the plateau schedule's patience/cooldown count epochs. Default: one pass over the training set (positions / --minibatch)")  # noqa: E501
     parser.add_argument("--validation-length", help="Number of validation examples to check per epoch. Default: # validation data (full validation set every epoch). The first N positions of val/ are used - a uniform random sample, identical every epoch", type=int, default=None)  # noqa: E501
     parser.add_argument("--momentum", help="SGD momentum, used with Nesterov. Default: .9", type=float, default=.9)  # noqa: E501
     parser.add_argument("--verbose", "-v", help="Turn on verbose mode", default=False, action="store_true")  # noqa: E501
     # slightly fancier args
-    parser.add_argument("--mixed-precision", help="Enable the mixed_float16 policy (fp16 compute, fp32 weights). Off by default: measured no benefit on this GPU/driver/model combo - 103.5ms/step with XLA+mixed precision together vs 103ms/step for XLA alone (statistically the same), despite this being an Ada GPU with Tensor Cores. XLA's fusion is apparently already capturing the available speedup here, leaving mixed precision nothing to add while still carrying its own numerical-stability surface (see the forced float32 softmax in policy.py). Only enable to re-test under different conditions (e.g. a larger batch size)", default=False, action="store_true")  # noqa: E501
+    parser.add_argument("--mixed-precision", default=False, action="store_true", help="Train with the mixed_float16 policy: fp16 compute, fp32 weights, with dynamic loss scaling. The final softmax stays float32 (see policy.py). Default: off (float32)")  # noqa: E501
     parser.add_argument("--symmetries", help="Comma-separated list of transforms, subset of noop,rot90,rot180,rot270,fliplr,flipud,diag1,diag2", default='noop,rot90,rot180,rot270,fliplr,flipud,diag1,diag2')  # noqa: E501
     parser.add_argument("--seed", help="Seed for weight initialization and for the per-position symmetry choices (train and val use seed and seed+1), making a run reproducible. Default: unseeded", type=int, default=None)  # noqa: E501
 
@@ -372,6 +372,9 @@ def set_up_run(args, resume_setting_keys, require_latest_checkpoint):
 
     steps_per_epoch, total_steps, train_data_generator, val_dataset = _open_data(
         args, shards, epochs_already_trained)
+    # Data seen per epoch, for comparing runs with different --minibatch sizes (whose
+    # epochs then cover different amounts of data).
+    meta_writer.metadata["positions_per_epoch"] = steps_per_epoch * args.minibatch
 
     return types.SimpleNamespace(
         model=model, resume=resume, weights_path=weights_path, meta_writer=meta_writer,
@@ -472,8 +475,11 @@ def _open_data(args, shards, epochs_already_trained):
     if unknown:
         raise ValueError("unknown symmetries: {}".format(unknown))
 
-    samples_per_epoch = args.epoch_length or sum(shards.train_sizes)
-    steps_per_epoch = samples_per_epoch // args.minibatch
+    steps_per_epoch = args.steps_per_epoch or sum(shards.train_sizes) // args.minibatch
+    if steps_per_epoch < 1:
+        raise ValueError("an epoch must be at least one step (--steps-per-epoch {}, "
+                         "--minibatch {}, {} training positions)".format(
+                             args.steps_per_epoch, args.minibatch, sum(shards.train_sizes)))
     total_steps = steps_per_epoch * args.epochs
     start_position = epochs_already_trained * steps_per_epoch * args.minibatch
     if args.verbose and start_position:
@@ -555,24 +561,25 @@ def build_parser():
     parser = argparse.ArgumentParser(description='Perform supervised training on a policy network (tuned large-batch recipe: momentum+Nesterov, warmup+cosine LR, streamed pre-shuffled shards).')  # noqa: E501
     add_run_arguments(parser)
     parser.add_argument("--weights", help="Name of a .h5 weights file (in the output directory) to load to resume training. Must be the latest checkpoint (weights.NNNNN.weights.h5 with NNNNN = epochs recorded in metadata.json), which also restores the optimizer's state (momentum, step count, learning rate)", default=None)  # noqa: E501
-    parser.add_argument("--learning-rate", "-r", help="Peak learning rate, reached at the end of warmup. Default: .055 (from an LR range test on this model/data/optimizer - see AlphaGo/training/lr_range_test.py; loss was stable through .167, unstable by .183, so .055 is ~1/3 of the instability threshold)", type=float, default=.055)  # noqa: E501
-    parser.add_argument("--warmup-steps", help="Number of steps to linearly warm up the learning rate over before decay (cosine) or plateau-monitoring (plateau) begins. Default: 1500", type=int, default=1500)  # noqa: E501
+    parser.add_argument("--learning-rate", "-r", type=float, required=True, help="Peak learning rate, reached at the end of warmup - find a candidate for this model and minibatch size with an LR range test (AlphaGo/training/lr_range_test.py), then confirm it with a training run.")  # noqa: E501
+    parser.add_argument("--warmup-steps", type=int, required=True, help="Number of minibatch steps to linearly ramp the learning rate from --warmup-start-lr up to --learning-rate, before cosine decay or plateau monitoring begins. Counted in steps, like --steps-per-epoch.")  # noqa: E501
     parser.add_argument("--warmup-start-lr", help="Learning rate at step 0, before warmup begins. Default: .0001", type=float, default=.0001)  # noqa: E501
-    parser.add_argument("--lr-schedule", choices=["cosine", "plateau"], default="cosine", help="How the learning rate decays after warmup. 'cosine' (default): cosine decay to 0 over the whole run, shaped by --epochs up front. 'plateau': hold at --learning-rate and cut by --plateau-factor whenever val_loss stops improving for --plateau-patience epochs, down to --plateau-min-lr - reacts to the real training curve instead of a fixed shape.")  # noqa: E501
+    parser.add_argument("--lr-schedule", choices=["cosine", "plateau"], required=True, help="How the learning rate decays after warmup. 'cosine': cosine decay to 0 over the whole run, shaped by --epochs up front. 'plateau': hold at --learning-rate and cut by --plateau-factor whenever val_loss stops improving for --plateau-patience epochs, down to --plateau-min-lr - reacts to the real training curve instead of a fixed shape.")  # noqa: E501
     parser.add_argument("--plateau-factor", type=float, default=0.5, help="--lr-schedule plateau only: multiplier applied to the learning rate on each cut. Default: 0.5 (a 2x cut; Keras's own default of 0.1 is harsher than training here tolerated well).")  # noqa: E501
-    parser.add_argument("--plateau-patience", type=int, default=5, help="--lr-schedule plateau only: epochs with no val_loss improvement before a cut. Counts epochs as set by --epoch-length, so choose it relative to that. Default: 5")  # noqa: E501
-    parser.add_argument("--plateau-cooldown", type=int, default=2, help="--lr-schedule plateau only: epochs after a cut before monitoring resumes, so each cut can show its effect. Default: 2")  # noqa: E501
-    parser.add_argument("--plateau-min-lr", type=float, default=0.0, help="--lr-schedule plateau only: the learning rate is never cut below this. Default: 0.0 (no floor)")  # noqa: E501
+    parser.add_argument("--plateau-patience", type=int, default=5, help="--lr-schedule plateau only: epochs with no val_loss improvement before a cut. Counts epochs as set by --steps-per-epoch, so choose it relative to that. Default: 5")  # noqa: E501
+    parser.add_argument("--plateau-cooldown", type=int, default=5, help="--lr-schedule plateau only: epochs after a cut before monitoring resumes, so each cut can show its effect. Default: 5")  # noqa: E501
+    parser.add_argument("--plateau-min-lr", type=float, default=1e-5, help="--lr-schedule plateau only: the learning rate is never cut below this. Default: 1e-5")  # noqa: E501
     parser.add_argument("--plateau-min-delta", type=float, default=0.005, help="--lr-schedule plateau only: minimum val_loss improvement that counts as 'still improving'. Default: 0.005 - Keras's own 1e-4 is below this project's epoch-to-epoch val_loss noise, so noise alone kept resetting the patience count.")  # noqa: E501
     return parser
 
 
 # Settings a training resume must keep (see _load_metadata):
-# - minibatch, epoch_length: steps_per_epoch, which places the data stream and, with
-#   --epochs, the cosine schedule's horizon.
+# - minibatch, steps_per_epoch: together they place the data stream (positions already
+#   seen = epochs x steps x minibatch), and steps_per_epoch with --epochs sets the cosine
+#   schedule's horizon.
 # - warmup_steps: the warmup length, and cosine's decay_steps.
 # - lr_schedule: the checkpoint's optimizer state differs in shape per schedule.
-TRAINING_RESUME_SETTINGS = ("minibatch", "epoch_length", "warmup_steps", "lr_schedule")
+TRAINING_RESUME_SETTINGS = ("minibatch", "steps_per_epoch", "warmup_steps", "lr_schedule")
 
 
 def _cosine_schedule(args, run):

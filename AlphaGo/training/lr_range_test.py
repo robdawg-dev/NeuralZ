@@ -5,7 +5,7 @@ viable learning-rate region.
 
 Ramps the LR through a gentle linear warmup (--range-warmup-start-lr -> --range-floor-lr
 over --range-warmup-steps) and then an EXPONENTIAL sweep from --range-floor-lr up to
---range-ceiling-lr over the rest of the run (shaped by --epochs/--epoch-length), logging
+--range-ceiling-lr over the rest of the run (--epochs x --steps-per-epoch steps), logging
 step/lr/loss/weight_norm/grad_norm/loss_scale to <out_directory>/step_diagnostics.jsonl
 every --range-check-every steps, with TerminateOnNaN as a safety net.
 
@@ -185,10 +185,10 @@ def build_parser():
     parser.add_argument("--range-warmup-steps", type=int, default=None,
                         help="Steps to linearly ramp from --range-warmup-start-lr to "
                              "--range-floor-lr before the exponential sweep begins. "
-                             "Default: one epoch's worth of steps (steps_per_epoch, from "
-                             "--epoch-length/--minibatch) - a minimum gentle warmup so the "
-                             "sweep doesn't start while the model's initial (very large) "
-                             "raw gradient magnitude is still settling.")
+                             "Default: one epoch's worth of steps (--steps-per-epoch) - a "
+                             "minimum gentle warmup so the sweep doesn't start while the "
+                             "model's initial (very large) raw gradient magnitude is still "
+                             "settling.")
     parser.add_argument("--range-warmup-start-lr", type=float, default=1e-4,
                         help="LR at step 0. Default: .0001")
     parser.add_argument("--range-floor-lr", type=float, default=1e-3,
@@ -206,12 +206,12 @@ def build_parser():
     return parser
 
 
-# Settings a --weights warm start must keep (see set_up_run): minibatch and epoch_length
-# set steps_per_epoch, which places the data stream's start position and numbers the
-# epochs. Nothing about the LR carries over - RangeTestLRCallback's step counter always
-# starts fresh at 0, so a warm start is a NEW, independent sweep rather than the SAME sweep
-# continued mid-step-count (which would need offset-aware accounting it doesn't have).
-RANGE_TEST_RESUME_SETTINGS = ("minibatch", "epoch_length")
+# Settings a --weights warm start must keep (see set_up_run): minibatch and
+# steps_per_epoch place the data stream's start position and number the epochs. Nothing
+# about the LR carries over - RangeTestLRCallback's step counter always starts fresh at 0,
+# so a warm start is a NEW, independent sweep rather than the SAME sweep continued
+# mid-step-count (which would need offset-aware accounting it doesn't have).
+RANGE_TEST_RESUME_SETTINGS = ("minibatch", "steps_per_epoch")
 
 
 def run_range_test(cmd_line_args=None):

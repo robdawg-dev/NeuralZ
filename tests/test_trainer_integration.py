@@ -19,6 +19,7 @@ from keras import mixed_precision
 
 import AlphaGo.training.lr_range_test as range_test
 import AlphaGo.training.supervised_policy_trainer as trainer
+from AlphaGo.training.shard_stream import dataset_info, find_split_shards
 from AlphaGo.models.policy import CNNPolicy
 from tests.test_convert_shuffled import FEATURES, _run, _selection
 
@@ -26,12 +27,13 @@ pytestmark = pytest.mark.slow
 
 # 4 steps per epoch, warmup finished inside the first epoch.
 MINIBATCH = 16
-EPOCH_LENGTH = 64
-STEPS_PER_EPOCH = EPOCH_LENGTH // MINIBATCH
+STEPS_PER_EPOCH = 4
 # What every run takes (add_run_arguments), and what only training adds.
-RUN_ARGS = ["--minibatch", str(MINIBATCH), "--epoch-length", str(EPOCH_LENGTH),
+RUN_ARGS = ["--minibatch", str(MINIBATCH), "--steps-per-epoch", str(STEPS_PER_EPOCH),
             "--validation-length", "32", "--seed", "1"]
-TRAIN_ARGS = RUN_ARGS + ["--warmup-steps", "2", "--learning-rate", "0.05"]
+# --lr-schedule cosine unless a test passes another (argparse keeps the last value).
+TRAIN_ARGS = RUN_ARGS + ["--warmup-steps", "2", "--learning-rate", "0.05",
+                         "--lr-schedule", "cosine"]
 
 
 @pytest.fixture(autouse=True)
@@ -161,6 +163,18 @@ def test_cosine_lr_decays_after_warmup(cosine_run):
     assert lrs[-1] == pytest.approx(0.0, abs=1e-6)  # cosine reaches its floor at total_steps
 
 
+def test_metadata_records_positions_per_epoch(cosine_run):
+    assert _metadata(cosine_run)["positions_per_epoch"] == STEPS_PER_EPOCH * MINIBATCH
+
+
+def test_default_epoch_is_one_pass_over_the_training_set(data, tmp_path):
+    args = trainer.build_parser().parse_args(_args(data, tmp_path / "out", "--epochs", "1"))
+    args.steps_per_epoch = None  # as if --steps-per-epoch were left out
+    run = trainer.set_up_run(args, (), require_latest_checkpoint=False)
+    n_train = sum(dataset_info(find_split_shards(data[1], "train"))[3])
+    assert run.steps_per_epoch == n_train // MINIBATCH > 1
+
+
 # --- resume ----------------------------------------------------------------------------
 
 def test_cosine_resume_matches_the_uninterrupted_run(data, cosine_run, stopped):
@@ -250,7 +264,7 @@ def test_resume_with_no_epochs_left_raises(data, stopped):
         _train(data, stopped, "--epochs", "2", "--weights", "weights.00002.weights.h5")
 
 
-@pytest.mark.parametrize("flag,value", [("--minibatch", "8"), ("--epoch-length", "32"),
+@pytest.mark.parametrize("flag,value", [("--minibatch", "8"), ("--steps-per-epoch", "2"),
                                         ("--warmup-steps", "3"),
                                         ("--lr-schedule", "plateau")])
 def test_resume_rejects_changed_settings(data, stopped, flag, value):
@@ -338,4 +352,28 @@ def test_unknown_symmetry_raises(data, tmp_path):
 def test_model_and_shard_feature_mismatch_raises(data, tmp_path):
     other = _model_json(tmp_path / "other.json", ["board", "ones"])
     with pytest.raises(ValueError, match="Model JSON file expects features"):
-        trainer.run_training([other, data[1], str(tmp_path / "out"), "--epochs", "1"])
+        trainer.run_training([other, data[1], str(tmp_path / "out"), "--epochs", "1"] +
+                             TRAIN_ARGS)
+
+
+@pytest.mark.parametrize("missing", ["--minibatch", "--epochs", "--learning-rate",
+                                     "--warmup-steps", "--lr-schedule"])
+def test_training_requires_recipe_options(data, tmp_path, missing, capsys):
+    """No defaults for options whose right value depends on the model, data and GPU - a
+    forgotten one must fail loudly, not quietly run a different experiment."""
+    args = _args(data, tmp_path / "out", "--epochs", "1")
+    i = args.index(missing)
+    del args[i:i + 2]
+    with pytest.raises(SystemExit):
+        trainer.run_training(args)
+    assert "required: " + missing in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("missing", ["--minibatch", "--epochs"])
+def test_range_test_requires_minibatch_and_epochs(data, tmp_path, missing, capsys):
+    args = _args(data, tmp_path / "out", "--epochs", "1", common=RUN_ARGS)
+    i = args.index(missing)
+    del args[i:i + 2]
+    with pytest.raises(SystemExit):
+        range_test.run_range_test(args)
+    assert "required: " + missing in capsys.readouterr().err
