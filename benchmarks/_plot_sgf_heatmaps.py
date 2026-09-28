@@ -24,18 +24,13 @@ import os
 
 import numpy as np
 
-from AlphaGo.training.xla_workarounds import ensure_xla_conv_nhwc
-# Must run before the first XLA compilation - same reason every trainer script here calls
-# this at module load time, before model.compile()/first forward pass.
-ensure_xla_conv_nhwc()
-
-from AlphaGo import go  # noqa: E402
-from AlphaGo.util import sgf_iter_states, plot_network_output, flatten_idx  # noqa: E402
-from AlphaGo.models.policy import CNNPolicy  # noqa: E402
+from AlphaGo import go
+from AlphaGo.util import sgf_iter_states, plot_network_output, flatten_idx
+from AlphaGo.models.policy import CNNPolicy
 # Unused directly, but importing it registers ResTowerPolicy (via the @neuralnet
 # decorator) so CNNPolicy.load_model() can find it by name in a model.json's "class"
 # field - same reason every trainer script here imports this and never references it.
-import AlphaGo.models.resnet_tower_policy  # noqa: E402,F401
+import AlphaGo.models.resnet_tower_policy  # noqa: F401
 
 
 class _BoardView:
@@ -97,8 +92,8 @@ def main():
     with open(args.sgf) as f:
         sgf_string = f.read()
 
-    # Imported here, not at module level: keeps the ensure_xla_conv_nhwc()/model-loading
-    # path importable even before matplotlib is installed, and plot_network_output's own
+    # Imported here, not at module level: keeps the model-loading path importable even
+    # before matplotlib is installed, and plot_network_output's own
     # import block already gives a clear, actionable error the first time it's actually
     # needed if it's still missing.
     import matplotlib.pyplot as plt

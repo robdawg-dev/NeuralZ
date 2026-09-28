@@ -16,11 +16,6 @@ services:
       # Make failures obvious if GPU passthrough isn't actually wired up, rather than
       # silently falling back to CPU.
       - TF_CPP_MIN_LOG_LEVEL=1
-      # Works around an XLA/cuDNN9 autotuner failure on this GPU - see
-      # AlphaGo/training/xla_workarounds.py for the full explanation, which is also where
-      # this is actually enforced now (belt-and-suspenders: training code sets this itself
-      # at module load, so it no longer depends on this env var surviving here).
-      - XLA_FLAGS=--xla_gpu_force_conv_nhwc=true
     deploy:
       resources:
         reservations:

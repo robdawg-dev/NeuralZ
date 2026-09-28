@@ -4,32 +4,22 @@ import re
 import time
 import types
 
-# BEFORE `import tensorflow`, deliberately. The flag must be in the environment ahead of
-# the first XLA compilation, and importing TF first is exactly the ordering that was
-# observed to defeat it (the autotuner then fails on the first jit_compile=True step).
-# ensure_xla_conv_nhwc() warns if TF is already imported, so calling it after the import
-# below would also make that warning fire on every normal run and train everyone to
-# ignore it.
-from AlphaGo.training.xla_workarounds import ensure_xla_conv_nhwc  # noqa: E402
+import numpy as np
+import tensorflow as tf  # noqa: F401
 
-ensure_xla_conv_nhwc()
-
-import numpy as np  # noqa: E402
-import tensorflow as tf  # noqa: E402,F401
-
-from keras import mixed_precision, ops, utils as keras_utils  # noqa: E402
-from keras.metrics import TopKCategoricalAccuracy  # noqa: E402
-from keras.optimizers import SGD  # noqa: E402
-from keras.optimizers.schedules import CosineDecay  # noqa: E402
-from keras.callbacks import (  # noqa: E402
+from keras import mixed_precision, ops, utils as keras_utils
+from keras.metrics import TopKCategoricalAccuracy
+from keras.optimizers import SGD
+from keras.optimizers.schedules import CosineDecay
+from keras.callbacks import (
     ModelCheckpoint, Callback, ReduceLROnPlateau, TerminateOnNaN)
-from AlphaGo.models.policy import CNNPolicy  # noqa: E402
+from AlphaGo.models.policy import CNNPolicy
 # Unused directly, but importing it registers ResTowerPolicy (via the @neuralnet
 # decorator) so CNNPolicy.load_model() can find it by name in a model.json's "class"
 # field - registration only happens when a class's defining module is actually imported
 # somewhere in the process, and nothing else here pulls this one in.
-import AlphaGo.models.resnet_tower_policy  # noqa: E402,F401
-from AlphaGo.training.shard_stream import (  # noqa: E402
+import AlphaGo.models.resnet_tower_policy  # noqa: F401
+from AlphaGo.training.shard_stream import (
     BATCH_TRANSFORMATIONS, find_split_shards, dataset_info, shard_batch_generator,
     validation_arrays)
 
@@ -941,9 +931,7 @@ def run_training(cmd_line_args=None):
                 print("resuming plateau state: best={:.4f} wait={}/{} cooldown_counter={}"
                       .format(resumed_best, resumed_wait, args.plateau_patience,
                               resumed_cooldown))
-    # jit_compile=True (XLA): safe here because of the ensure_xla_conv_nhwc() call at
-    # module load time above - see xla_workarounds.py for why it's needed. Measured
-    # 102.5ms/step vs 113ms/step without XLA.
+    # jit_compile=True (XLA): measured 102.5ms/step vs 113ms/step without XLA.
     model.compile(
         loss='categorical_crossentropy', optimizer=sgd,
         metrics=["accuracy", TopKCategoricalAccuracy(k=5, name="top5_accuracy"),
