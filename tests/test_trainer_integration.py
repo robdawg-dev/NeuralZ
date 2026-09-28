@@ -152,8 +152,20 @@ def test_fresh_run_writes_checkpoints_and_metadata(data, cosine_run):
     assert meta["model_file"] == data[0]
     assert len(meta["cmd_line_args"]) == 1
     assert meta["cmd_line_args"][0]["minibatch"] == MINIBATCH
+    assert all(e["weight_norm"] > 0 for e in meta["epochs"])
     # Synthetic shards are well-formed, so the batch sanity checker has nothing to report.
     assert not (cosine_run / "batch_sanity_log.json").exists()
+
+
+def test_a_nan_loss_stops_training(data, tmp_path):
+    """A learning rate far too high makes the loss NaN within the first epoch: training
+    stops there instead of running on, with that epoch's checkpoint and metadata row
+    still written."""
+    out = tmp_path / "nan"
+    _train(data, out, "--epochs", "5", "--warmup-steps", "0", "--learning-rate", "1e30")
+    epochs = _metadata(out)["epochs"]
+    assert len(epochs) == 1
+    assert (out / "weights.00001.weights.h5").exists()
 
 
 def test_cosine_lr_decays_after_warmup(cosine_run):
@@ -292,8 +304,12 @@ def test_lr_range_test_writes_step_diagnostics(data, tmp_path):
     # The last step logged is 5 of the 6 sweep steps; the ceiling itself is only reached
     # at total_steps, one past the end.
     assert lrs[-1] == pytest.approx(1e-3 * (0.5 / 1e-3) ** (5 / 6), rel=1e-5)
-    # grad_norm only reaches the logs through the monkey-patched train_step.
+    # grad_norm and the step's own loss only reach the logs through the monkey-patched
+    # train_step. The step loss is not Keras's running epoch mean (they differ from the
+    # second step of each epoch on).
     assert all(r["grad_norm"] is not None and r["grad_norm"] > 0 for r in records)
+    assert all(r["loss"] is not None for r in records)
+    assert any(r["loss"] != r["loss_epoch_mean"] for r in records)
     assert all(r["loss_scale"] is None for r in records)  # float32: no loss scaling
 
 

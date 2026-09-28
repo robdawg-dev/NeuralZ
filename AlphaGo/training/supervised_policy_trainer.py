@@ -14,7 +14,7 @@ from keras.metrics import TopKCategoricalAccuracy
 from keras.optimizers import SGD
 from keras.optimizers.schedules import CosineDecay
 from keras.callbacks import (
-    ModelCheckpoint, Callback, ReduceLROnPlateau)
+    ModelCheckpoint, Callback, ReduceLROnPlateau, TerminateOnNaN)
 from AlphaGo.models.policy import CNNPolicy
 from AlphaGo.training.shard_stream import (
     BATCH_TRANSFORMATIONS, find_split_shards, dataset_info, shard_batch_generator,
@@ -231,6 +231,11 @@ class TrainingDiagnosticsCallback(Callback):
     - learning_rate: the LR used this epoch - from the schedule for cosine, from the
       optimizer for plateau (lr_schedule None).
     - epoch_seconds, steps_per_second: throughput, so a run slowing down shows in the data.
+    - weight_norm: ||w|| over the trainable weights at the epoch's end. With batch norm
+      and no weight decay the effective step size goes roughly as learning_rate /
+      weight_norm^2, so this is what shows how violent a given LR actually is.
+    - loss_scale: under --mixed-precision, the dynamic loss scale; a falling scale means
+      steps are being skipped for fp16 overflow. Absent without mixed precision.
     """
 
     def __init__(self, lr_schedule, steps_per_epoch):
@@ -252,6 +257,12 @@ class TrainingDiagnosticsCallback(Callback):
         elapsed = time.time() - self._epoch_start
         logs["epoch_seconds"] = elapsed
         logs["steps_per_second"] = self.steps_per_epoch / elapsed if elapsed > 0 else 0.0
+        logs["weight_norm"] = float(np.sqrt(sum(
+            float(np.sum(np.square(v.numpy().astype(np.float64))))
+            for v in self.model.trainable_variables)))
+        for v in self.model.optimizer.variables:
+            if v.name == "dynamic_scale":
+                logs["loss_scale"] = float(v.numpy())
 
 
 class MetadataWriterCallback(Callback):
@@ -527,6 +538,8 @@ def fit_run(run, args, lr_schedule, lr_callbacks=(), epoch_callbacks=(),
     """model.fit() over the run's data, with the callbacks in the order they depend on.
     Keras passes one logs dict through every callback for an event, in list order:
     - lr_callbacks (whatever sets the LR per batch: warmup, the range test's sweep).
+    - TerminateOnNaN: a NaN loss stops the run (the epoch still ends, so its checkpoint and
+      metadata are written) rather than wasting the rest of it.
     - TrainingDiagnosticsCallback, logging the LR used this epoch - so before any
       epoch_callbacks that change it for the next epoch.
     - epoch_callbacks (ReduceLROnPlateau, the LR override), in the order given.
@@ -538,8 +551,9 @@ def fit_run(run, args, lr_schedule, lr_callbacks=(), epoch_callbacks=(),
       checkpoint exists.
     """
     diagnostics = TrainingDiagnosticsCallback(lr_schedule, run.steps_per_epoch)
-    callbacks = (list(lr_callbacks) + [diagnostics] + list(epoch_callbacks) +
-                 [run.checkpointer] + list(restore_callbacks) + [run.meta_writer])
+    callbacks = (list(lr_callbacks) + [TerminateOnNaN(), diagnostics] +
+                 list(epoch_callbacks) + [run.checkpointer] + list(restore_callbacks) +
+                 [run.meta_writer])
     if args.verbose:
         print("STARTING TRAINING")
     run.model.fit(

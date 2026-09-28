@@ -220,8 +220,8 @@ test         2,507         126         799,506      5.06%
 
 Replays every chosen game and turns each position into the network's input: **48 feature
 planes of 19x19** (stones, liberties, recent moves, ladders, legal moves and more), with the
-move KataGo played as the label. The output is written as shuffled shards of ~100,000
-positions each.
+move KataGo played as the label. The output is written as shuffled shards of up to
+1,000,000 positions each (`--positions-per-file`).
 
 ```bash
 docker compose run --rm gpu python -m AlphaGo.preprocessing.convert_shuffled \
@@ -233,11 +233,14 @@ rate, i.e. moves that aren't worth imitating (about 0.14% of positions).
 
 Reference result, recorded in `workspace/prod_40m/shards/conversion.json`:
 
-| Split | Games | Positions | Shards |
-|---|---|---|---|
-| train | 116,589 | 37,200,866 | 373 |
-| val | 6,268 | 1,994,800 | 20 |
-| test | 2,507 | 799,552 | 8 |
+| Split | Games | Positions |
+|---|---|---|
+| train | 116,589 | 37,200,866 |
+| val | 6,268 | 1,994,800 |
+| test | 2,507 | 799,552 |
+
+(The reference run's shards held 100,000 positions each; how the data is split into shard
+files makes no difference to training.)
 
 That's about 100 GB. The train split took about 2 hours, most of it the first pass.
 

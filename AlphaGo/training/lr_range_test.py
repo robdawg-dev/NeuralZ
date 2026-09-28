@@ -7,7 +7,7 @@ Ramps the LR through a gentle linear warmup (--range-warmup-start-lr -> --range-
 over --range-warmup-steps) and then an EXPONENTIAL sweep from --range-floor-lr up to
 --range-ceiling-lr over the rest of the run (--epochs x --steps-per-epoch steps), logging
 step/lr/loss/weight_norm/grad_norm/loss_scale to <out_directory>/step_diagnostics.jsonl
-every --range-check-every steps, with TerminateOnNaN as a safety net.
+every --range-check-every steps. A NaN loss stops the run.
 
 This is a coarse localizer only, NOT a verdict on a safe LR: this mode only ramps, it never
 holds, and ramping tolerance is not the same as genuine stability at a held LR - treat its
@@ -23,7 +23,7 @@ import json
 import types
 
 import tensorflow as tf
-from keras.callbacks import Callback, TerminateOnNaN
+from keras.callbacks import Callback
 from keras.optimizers import SGD
 
 from AlphaGo.training.supervised_policy_trainer import (
@@ -75,8 +75,12 @@ class RangeTestLRCallback(Callback):
 class RangeTestDiagnosticsCallback(Callback):
     """Step-granularity visibility into the sweep.
 
-    Logs step/lr/loss/weight_norm/grad_norm/loss_scale to <out_directory>/
-    step_diagnostics.jsonl every check_every steps. Deliberately has NO automatic
+    Logs step/lr/loss/loss_epoch_mean/weight_norm/grad_norm/loss_scale to
+    <out_directory>/step_diagnostics.jsonl every check_every steps. "loss" is that step's
+    own loss; "loss_epoch_mean" is Keras's running mean of the loss since the epoch began
+    (what logs["loss"] holds, and what earlier versions of this file recorded as "loss" -
+    it resets every epoch and averages over a wide stretch of the sweep's LRs, so it is
+    not a loss-vs-LR measurement). Deliberately has NO automatic
     stop-on-weight_norm-ratio (an earlier version of this diagnostic, in
     lr_testing_trainer.py, stopped training once weight_norm exceeded a fixed
     multiple of its starting value) - that heuristic produced misleading verdicts in
@@ -84,14 +88,14 @@ class RangeTestDiagnosticsCallback(Callback):
     later turned out to be well past the real stability boundary, and looked alarming
     at LRs that turned out fine). This callback only records; judging the sweep is a
     manual/offline read of the full curve afterward, primarily via the loss trend, not
-    a live threshold. TerminateOnNaN (added alongside this callback where it's used)
-    is the only automatic stop, as a backstop against a genuine runaway wasting the
-    rest of the sweep's step budget.
+    a live threshold. TerminateOnNaN (fit_run adds it to every run) is the only
+    automatic stop, as a backstop against a genuine runaway wasting the rest of the
+    sweep's step budget.
 
-    grad_norm/loss_scale are read from logs["grad_norm"]/logs["loss_scale"], only
-    present when the model's train_step has been monkey-patched (see
-    _grad_norm_and_loss_scale_train_step) - the logs.get(...) guards keep this
-    callback harmless if that patch isn't present.
+    The step's loss, grad_norm and loss_scale are read from logs["batch_loss"]/
+    logs["grad_norm"]/logs["loss_scale"], only present when the model's train_step has
+    been monkey-patched (see _grad_norm_and_loss_scale_train_step) - the logs.get(...)
+    guards keep this callback harmless if that patch isn't present.
     """
 
     def __init__(self, check_every, out_path):
@@ -104,14 +108,13 @@ class RangeTestDiagnosticsCallback(Callback):
         if self._step % self.check_every == 0:
             weight_norm = float(tf.linalg.global_norm(self.model.trainable_variables))
             lr = float(self.model.optimizer.learning_rate)
-            loss = float(logs.get("loss")) if logs and "loss" in logs else None
-            grad_norm = logs.get("grad_norm") if logs else None
-            grad_norm = float(grad_norm) if grad_norm is not None else None
-            loss_scale = logs.get("loss_scale") if logs else None
-            loss_scale = float(loss_scale) if loss_scale is not None else None
-            record = {"step": self._step, "lr": lr, "loss": loss,
-                      "weight_norm": weight_norm, "grad_norm": grad_norm,
-                      "loss_scale": loss_scale}
+            logs = logs or {}
+
+            def logged(key):
+                return float(logs[key]) if logs.get(key) is not None else None
+            record = {"step": self._step, "lr": lr, "loss": logged("batch_loss"),
+                      "loss_epoch_mean": logged("loss"), "weight_norm": weight_norm,
+                      "grad_norm": logged("grad_norm"), "loss_scale": logged("loss_scale")}
             self._f.write(json.dumps(record) + "\n")
             self._f.flush()
         self._step += 1
@@ -121,10 +124,11 @@ class RangeTestDiagnosticsCallback(Callback):
 
 
 def _grad_norm_and_loss_scale_train_step(self, data):
-    """Replaces model.train_step so grad_norm and (under mixed precision) the optimizer's
-    current dynamic loss scale reach RangeTestDiagnosticsCallback via
-    logs["grad_norm"]/logs["loss_scale"] every step - model.fit() doesn't expose either
-    to callbacks otherwise.
+    """Replaces model.train_step so the step's own loss, grad_norm and (under mixed
+    precision) the optimizer's current dynamic loss scale reach
+    RangeTestDiagnosticsCallback via logs["batch_loss"]/logs["grad_norm"]/
+    logs["loss_scale"] every step - model.fit() doesn't expose any of them to callbacks
+    otherwise (its logs["loss"] is the running mean since the epoch began).
 
     Mirrors Model.train_step (keras/src/models/model.py): under mixed_float16, gradients
     must be computed w.r.t. the SCALED loss (keeps small gradient values representable
@@ -162,6 +166,7 @@ def _grad_norm_and_loss_scale_train_step(self, data):
         else:
             metric.update_state(y, y_pred)
     results = {m.name: m.result() for m in self.metrics}
+    results["batch_loss"] = loss
     results["grad_norm"] = grad_norm
     for v in self.optimizer.variables:
         if v.name == "dynamic_scale":
@@ -252,7 +257,7 @@ def run_range_test(cmd_line_args=None):
         args.range_check_every, os.path.join(args.out_directory, "step_diagnostics.jsonl"))
 
     fit_run(run, args, lr_schedule=None, lr_callbacks=[range_lr_cb],
-            epoch_callbacks=[range_diagnostics, TerminateOnNaN()])
+            epoch_callbacks=[range_diagnostics])
 
 
 if __name__ == "__main__":

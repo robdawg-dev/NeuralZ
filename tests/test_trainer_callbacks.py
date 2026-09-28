@@ -16,7 +16,7 @@ import types
 import numpy as np
 import pytest
 import keras
-from keras import layers
+from keras import layers, mixed_precision
 from keras.callbacks import Callback, ReduceLROnPlateau
 from keras.optimizers import SGD
 
@@ -31,9 +31,12 @@ def make_model(lr=0.1):
 
 
 def fake_model(learning_rate=0.0, iterations=0):
-    """Just enough of a model for callbacks that only touch model.optimizer."""
+    """Just enough of a model for callbacks that only touch model.optimizer (and, for
+    TrainingDiagnosticsCallback, the - here empty - variable lists)."""
     return types.SimpleNamespace(
-        optimizer=types.SimpleNamespace(learning_rate=learning_rate, iterations=iterations))
+        trainable_variables=[],
+        optimizer=types.SimpleNamespace(learning_rate=learning_rate, iterations=iterations,
+                                        variables=[]))
 
 
 def lr_sequence(cb, model, n):
@@ -246,13 +249,14 @@ def test_range_diagnostics_logs_every_nth_step(tmp_path):
     cb = range_test.RangeTestDiagnosticsCallback(check_every=3, out_path=str(out))
     cb.set_model(model)
     for i in range(7):
-        cb.on_train_batch_end(i, {"loss": 1.5, "grad_norm": 2.0})
+        cb.on_train_batch_end(i, {"batch_loss": 1.4, "loss": 1.5, "grad_norm": 2.0})
     cb.on_train_end()
 
     records = [json.loads(line) for line in out.read_text().splitlines()]
     assert [r["step"] for r in records] == [0, 3, 6]
     assert records[0]["lr"] == pytest.approx(0.2)
-    assert records[0]["loss"] == 1.5
+    assert records[0]["loss"] == 1.4  # the step's own loss
+    assert records[0]["loss_epoch_mean"] == 1.5  # Keras's running mean
     assert records[0]["grad_norm"] == 2.0
     assert records[0]["loss_scale"] is None
     assert records[0]["weight_norm"] > 0
@@ -265,7 +269,8 @@ def test_range_diagnostics_tolerates_missing_logs(tmp_path):
     cb.on_train_batch_end(0, None)
     cb.on_train_end()
     record = json.loads(out.read_text())
-    assert (record["loss"], record["grad_norm"], record["loss_scale"]) == (None, None, None)
+    assert (record["loss"], record["loss_epoch_mean"], record["grad_norm"],
+            record["loss_scale"]) == (None, None, None, None)
 
 
 # --- sanity_checked_generator ----------------------------------------------------------
@@ -398,6 +403,35 @@ def test_diagnostics_records_throughput(monkeypatch):
     cb.on_epoch_end(0, logs)
     assert logs["epoch_seconds"] == pytest.approx(4.0)
     assert logs["steps_per_second"] == pytest.approx(5.0)
+
+
+def test_diagnostics_records_weight_norm():
+    model = make_model()
+    cb = trainer.TrainingDiagnosticsCallback(None, steps_per_epoch=10)
+    cb.set_model(model)
+    logs = {}
+    cb.on_epoch_begin(0)
+    cb.on_epoch_end(0, logs)
+    expected = np.sqrt(sum(np.sum(np.square(v.numpy())) for v in model.trainable_variables))
+    assert logs["weight_norm"] == pytest.approx(float(expected), rel=1e-6)
+    assert "loss_scale" not in logs  # float32: no loss scaling
+
+
+def test_diagnostics_records_the_mixed_precision_loss_scale():
+    original = mixed_precision.global_policy()
+    mixed_precision.set_global_policy("mixed_float16")
+    try:
+        model = make_model()
+        x = np.ones((8, 4), np.float32)
+        model.train_on_batch(x, np.ones((8, 3), np.float32))  # builds the loss scale
+        cb = trainer.TrainingDiagnosticsCallback(None, steps_per_epoch=10)
+        cb.set_model(model)
+        logs = {}
+        cb.on_epoch_begin(0)
+        cb.on_epoch_end(0, logs)
+        assert logs["loss_scale"] > 1
+    finally:
+        mixed_precision.set_global_policy(original)
 
 
 def test_diagnostics_ignores_missing_logs():
