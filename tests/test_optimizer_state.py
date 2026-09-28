@@ -1,9 +1,8 @@
-"""Verifies OptimizerStateCallback and the trainer's resume-side read_optimizer_state /
-apply_optimizer_state (AlphaGo/training/supervised_policy_trainer.py) round-trip SGD
-momentum correctly under both a plain optimizer and the mixed_float16 case
-(--mixed-precision wraps the optimizer in a LossScaleOptimizer at compile() time, and
-that wrapped case was never live-tested before being wired into the trainer), and refuse
-missing, stale or mismatched state.
+"""Verifies the trainer's load_checkpoint (AlphaGo/training/supervised_policy_trainer.py)
+restores the optimizer's state - SGD momentum, step count, learning rate, and under
+--mixed-precision the LossScaleOptimizer's own state - from a weights checkpoint, under both
+a plain optimizer and the mixed_float16 case (--mixed-precision wraps the optimizer in a
+LossScaleOptimizer at compile() time), and refuses to silently resume without it.
 
 CPU-only, tiny model, a handful of steps - this is a mechanism check, not a training run.
 """
@@ -12,11 +11,13 @@ os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
 
 import warnings
 
+import h5py
 import numpy as np
 import pytest
 import keras
 from keras import layers, mixed_precision
 from keras.optimizers import SGD
+from keras.optimizers.schedules import CosineDecay
 
 import AlphaGo.training.supervised_policy_trainer as trainer
 
@@ -39,104 +40,98 @@ def make_model(learning_rate=0.1):
     return model
 
 
-def variable_dict(optimizer):
-    store = {}
-    optimizer.save_own_variables(store)
-    return store
+def optimizer_values(model):
+    # By position: a fresh optimizer's variables have different names (sgd_1/...)
+    return [v.numpy().copy() for v in model.optimizer.variables]
 
 
-@pytest.mark.parametrize("use_mixed_precision", [False, True])
-def test_optimizer_state_roundtrip(tmp_path, use_mixed_precision):
+def weight_values(model):
+    return [v.numpy().copy() for v in model.weights]
+
+
+def checkpoint(tmp_path, use_mixed_precision=False, steps=5):
+    """A trained model and its checkpoint, saved the way ModelCheckpoint does in fit()."""
     mixed_precision.set_global_policy("mixed_float16" if use_mixed_precision else "float32")
-
     model = make_model()
     rng = np.random.default_rng(0)
     x = rng.random((32, 6), dtype="float32")
     y = rng.random((32, 4), dtype="float32")
-    for _ in range(5):
+    for _ in range(steps):
         model.train_on_batch(x, y)
+    path = str(tmp_path / "weights.00001.weights.h5")
+    model.save_weights(path)
+    return model, path
 
+
+@pytest.mark.parametrize("use_mixed_precision", [False, True])
+def test_checkpoint_restores_weights_and_optimizer_exactly(tmp_path, use_mixed_precision):
+    model, path = checkpoint(tmp_path, use_mixed_precision)
     if use_mixed_precision:
         assert type(model.optimizer).__name__ == "LossScaleOptimizer"
+    saved = optimizer_values(model)
+    # Momentum after 5 real training steps is non-trivial, not all-zero - otherwise this
+    # test would trivially "pass" even if loading silently did nothing.
+    assert int(model.optimizer.iterations) == 5
+    assert any(v.ndim and not np.allclose(v, 0) for v in saved)
 
-    saved = variable_dict(model.optimizer)
-    assert len(saved) > 0
-    # Momentum after 5 real training steps should be non-trivial, not all-zero - otherwise
-    # this test would trivially "pass" even if the save/load path silently did nothing.
-    assert any(not np.allclose(v, np.zeros_like(v)) for v in saved.values())
+    # A fresh compiled model, as a real --weights resume has (momentum at 0).
+    resumed = make_model()
+    trainer.load_checkpoint(resumed, path)
 
-    # Save and restore via the real trainer code, not a hand-rolled equivalent.
-    state_path = save_state(model, tmp_path, epoch=0)
-    store = trainer.read_optimizer_state(str(state_path), expected_epochs=1)
+    restored = optimizer_values(resumed)
+    assert len(restored) == len(saved)
+    for a, b in zip(saved, restored):
+        assert np.array_equal(a, b)
+    for a, b in zip(weight_values(model), weight_values(resumed)):
+        assert np.array_equal(a, b)
 
-    # Fresh model/optimizer, as a real --weights resume would have (momentum at 0).
-    model2 = make_model()
 
-    # Confirm the real hazard apply_optimizer_state guards against: load_own_variables()
-    # on an unbuilt optimizer does NOT raise - it silently no-ops (just a UserWarning) and
-    # leaves momentum at 0. This is exactly why it calls build() unconditionally before
-    # loading - skipping it would be a silent bug, not a loud one.
+def test_keras_alone_skips_the_state_of_an_unbuilt_optimizer(tmp_path):
+    """The hazard load_checkpoint guards against: model.load_weights() into a compiled
+    model whose optimizer isn't built yet does NOT raise - it warns and leaves momentum at
+    0. Documented here so a Keras change in this behaviour shows up."""
+    _, path = checkpoint(tmp_path)
+    resumed = make_model()
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        model2.optimizer.load_own_variables(dict(store))
-    assert len(caught) == 1
-    assert len(variable_dict(model2.optimizer)) != len(saved)
-
-    trainer.apply_optimizer_state(model2, store)
-
-    restored = variable_dict(model2.optimizer)
-    assert set(restored.keys()) == set(saved.keys())
-    for k in saved:
-        assert np.allclose(saved[k], restored[k])
+        resumed.load_weights(path)
+    assert any("Skipping variable loading for optimizer" in str(w.message) for w in caught)
+    assert int(resumed.optimizer.iterations) == 0
 
 
-def save_state(model, out_dir, epoch):
-    cb = trainer.OptimizerStateCallback(str(out_dir))
-    cb.set_model(model)
-    cb.on_epoch_end(epoch)
-    path = out_dir / trainer.OPTIMIZER_STATE_FILE
-    assert path.exists()
-    return path
-
-
-def trained_model(**kwargs):
-    model = make_model(**kwargs)
-    x = np.ones((8, 6), np.float32)
-    model.train_on_batch(x, np.ones((8, 4), np.float32))
-    return model
-
-
-def test_saved_state_records_completed_epochs(tmp_path):
-    path = save_state(trained_model(), tmp_path, epoch=4)
-    with np.load(path) as f:
-        assert int(f["completed_epochs"]) == 5
-
-
-def test_read_missing_state_raises(tmp_path):
-    with pytest.raises(ValueError, match="not found"):
-        trainer.read_optimizer_state(str(tmp_path / "optimizer_state.npz"), 3)
-
-
-def test_read_state_from_another_epoch_raises(tmp_path):
-    path = save_state(trained_model(), tmp_path, epoch=1)
-    with pytest.raises(ValueError, match="saved after epoch 2, but metadata.json records 3"):
-        trainer.read_optimizer_state(str(path), 3)
-
-
-def test_read_state_without_epoch_raises(tmp_path):
-    path = tmp_path / "optimizer_state.npz"
-    store = {}
-    trained_model().optimizer.save_own_variables(store)
-    np.savez(path, **store)
-    with pytest.raises(ValueError, match="saved after epoch None"):
-        trainer.read_optimizer_state(str(path), 1)
-
-
-def test_apply_state_from_a_differently_configured_optimizer_raises(tmp_path):
+def test_mismatched_optimizer_raises(tmp_path):
     """Plateau's optimizer has a learning_rate variable; a schedule-driven (cosine) one
     doesn't. Loading one into the other must fail rather than warn and skip."""
-    path = save_state(trained_model(), tmp_path, epoch=0)
-    store = trainer.read_optimizer_state(str(path), 1)
-    cosine = make_model(learning_rate=keras.optimizers.schedules.CosineDecay(0.1, 100))
-    with pytest.raises(ValueError, match="different --lr-schedule"):
-        trainer.apply_optimizer_state(cosine, store)
+    _, path = checkpoint(tmp_path)
+    cosine = make_model(learning_rate=CosineDecay(0.1, 100))
+    with pytest.raises(ValueError, match="different --lr-schedule or --mixed-precision"):
+        trainer.load_checkpoint(cosine, path)
+
+
+def test_mixed_precision_toggled_raises(tmp_path):
+    _, path = checkpoint(tmp_path, use_mixed_precision=True)
+    mixed_precision.set_global_policy("float32")
+    with pytest.raises(ValueError, match="different --lr-schedule or --mixed-precision"):
+        trainer.load_checkpoint(make_model(), path)
+
+
+def test_checkpoint_without_optimizer_state_raises(tmp_path):
+    """Weights saved from an uncompiled model carry no optimizer section at all."""
+    model = keras.Sequential([layers.Input(shape=(6,)), layers.Dense(16, activation="relu"),
+                              layers.Dense(4)])
+    path = str(tmp_path / "bare.weights.h5")
+    model.save_weights(path)
+    with h5py.File(path, "r") as f:
+        assert "optimizer" not in f
+    with pytest.raises(ValueError, match="holds no optimizer state"):
+        trainer.load_checkpoint(make_model(), path)
+
+
+def test_weights_only_leaves_the_optimizer_fresh(tmp_path):
+    """--lr-range-test: the checkpoint's weights, but a fresh optimizer."""
+    model, path = checkpoint(tmp_path)
+    resumed = make_model()
+    trainer.load_checkpoint(resumed, path, with_optimizer=False)
+    for a, b in zip(weight_values(model), weight_values(resumed)):
+        assert np.array_equal(a, b)
+    assert int(resumed.optimizer.iterations) == 0

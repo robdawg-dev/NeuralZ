@@ -3,7 +3,9 @@ import json
 import re
 import time
 import types
+import warnings
 
+import h5py
 import numpy as np
 import tensorflow as tf  # noqa: F401
 
@@ -85,14 +87,20 @@ class WarmupCallback(Callback):
     warmup_steps/warmup_target), warmup has to happen here as a callback instead, before
     handing control of the (now plain) learning_rate over to ReduceLROnPlateau for the
     rest of the run.
+
+    start_step: batches of warmup already done, for a --weights resume that stopped
+    partway through warmup - the ramp then continues exactly where the interrupted run's
+    left off. Counted in batches, as the ramp itself is (the optimizer's own iteration
+    count can lag it under --mixed-precision, which skips steps with non-finite
+    gradients).
     """
 
-    def __init__(self, warmup_steps, start_lr, target_lr):
+    def __init__(self, warmup_steps, start_lr, target_lr, start_step=0):
         super().__init__()
         self.warmup_steps = warmup_steps
         self.start_lr = start_lr
         self.target_lr = target_lr
-        self._step = 0
+        self._step = start_step
 
     def on_train_batch_begin(self, batch, logs=None):
         if self._step > self.warmup_steps:
@@ -159,15 +167,13 @@ class LROverrideCallback(Callback):
             self.model.optimizer.learning_rate = override_lr
 
 
-OPTIMIZER_STATE_FILE = "optimizer_state.npz"
-# Extra key stored alongside the optimizer's own variables ("0", "1", ...), so a resume
-# can tell whether the file belongs to the checkpoint it is resuming from.
-_COMPLETED_EPOCHS_KEY = "completed_epochs"
+def load_checkpoint(model, path, with_optimizer=True):
+    """Loads a weights.NNNNN.weights.h5 checkpoint into a compiled model - the weights,
+    and (with_optimizer) the optimizer's state as it was at that epoch's end.
 
-
-class OptimizerStateCallback(Callback):
-    """Saves the optimizer's own variables every epoch, so a --weights resume continues
-    with the exact optimizer the interrupted run had instead of a fresh one. That covers:
+    A checkpoint saved while the model is compiled - always the case for ModelCheckpoint
+    during fit() - holds the optimizer's variables alongside the weights, so a --weights
+    resume continues with the exact optimizer the interrupted run had:
     - SGD momentum. Resetting it to 0 on resume has been a real, repeated source of
       trouble in this project - an un-cushioned LR jump onto a momentum-less optimizer
       diverged to nan the first time a manual LR cut was tried via resume, and even a
@@ -175,81 +181,41 @@ class OptimizerStateCallback(Callback):
       disrupted training loss/entropy before settling.
     - the iteration counter, which --lr-schedule cosine's CosineDecay reads its position
       on the warmup+decay curve from - restoring it continues the one whole-run curve.
-      (Under --mixed-precision, steps skipped for non-finite gradients don't advance it,
-      so this matches an uninterrupted run exactly, where a steps-trained offset would not.)
     - under --lr-schedule plateau, the learning_rate itself - a plain variable there,
       holding whatever ReduceLROnPlateau / lr_override.txt left it at, including a cut
-      made at the end of the last epoch (this callback runs after both of them).
+      made at the end of the last epoch (the checkpoint callback runs after both).
     - under --mixed-precision, the wrapping LossScaleOptimizer's dynamic loss-scale state.
 
-    Overwrites the same file every epoch (out_directory/optimizer_state.npz) rather
-    than keeping one per epoch like weights.NNNNN.weights.h5 does - SGD-with-momentum's
-    state is roughly the same size as the model's own weights, so historical copies
-    would roughly double checkpoint storage. The number of completed epochs is stored
-    with it, so read_optimizer_state() can refuse a file from a different point in the run
-    than the checkpoint being resumed.
+    Keras only restores that state into an optimizer that is already built, and
+    otherwise does NOT raise: it warns "Skipping variable loading for optimizer ..." and
+    leaves momentum at 0. The same warning is all a mismatched checkpoint produces (other
+    --lr-schedule, --mixed-precision toggled). So the optimizer is built explicitly
+    first, and that warning is turned into an error.
+
+    with_optimizer=False loads only the weights and leaves the optimizer fresh
+    (--lr-range-test starts every sweep with one).
     """
-
-    def __init__(self, out_directory):
-        super().__init__()
-        self.path = os.path.join(out_directory, OPTIMIZER_STATE_FILE)
-
-    def on_epoch_end(self, epoch, logs=None):
-        store = {}
-        self.model.optimizer.save_own_variables(store)
-        # epoch is Keras's 0-based index, already offset by initial_epoch on a resume
-        store[_COMPLETED_EPOCHS_KEY] = np.int64(epoch + 1)
-        np.savez(self.path, **store)
-
-
-def read_optimizer_state(path, expected_epochs):
-    """Loads a resume's optimizer_state.npz, checking it was saved at the end of epoch
-    expected_epochs. Returns the variable store for apply_optimizer_state().
-
-    Separate from apply_optimizer_state() so a resume fails on a missing or stale file
-    up front, before the (slow) validation set is materialized and the model compiled.
-    """
-    if not os.path.exists(path):
-        raise ValueError(
-            "{} not found: a --weights resume needs the optimizer state saved alongside the "
-            "checkpoint (momentum, step count, learning rate). Start a fresh "
-            "out_directory instead.".format(path))
-    with np.load(path) as f:
-        store = dict(f)
-    saved_epochs = store.pop(_COMPLETED_EPOCHS_KEY, None)
-    if saved_epochs is None or int(saved_epochs) != expected_epochs:
-        raise ValueError(
-            "{} was saved after epoch {}, but metadata.json records {} completed epochs: "
-            "the optimizer state doesn't belong to the point this resume continues from."
-            .format(path, None if saved_epochs is None else int(saved_epochs),
-                    expected_epochs))
-    return store
-
-
-def apply_optimizer_state(model, store):
-    """Loads a store from read_optimizer_state() into the compiled model's optimizer.
-
-    Must run after compile() (the optimizer isn't attached, and under mixed precision
-    isn't wrapped, until then) and needs an explicit build() first: optimizer variables
-    are created lazily on the first apply_gradients() call, so load_own_variables() has
-    nothing to load into otherwise.
-
-    DO NOT remove/reorder the build() call - load_own_variables() on an unbuilt optimizer
-    does NOT raise: it silently no-ops (a UserWarning about a variable-count mismatch)
-    and leaves momentum at 0 - see test_optimizer_state.py. For the same reason the keys
-    are checked explicitly: state saved by a differently configured optimizer (other
-    --lr-schedule, --mixed-precision toggled) would otherwise be skipped with only a
-    warning.
-    """
+    if not with_optimizer:
+        model.load_weights(path, objects_to_skip=[model.optimizer])
+        return
+    with h5py.File(path, "r") as f:
+        if "optimizer" not in f:
+            raise ValueError(
+                "{} holds no optimizer state (it was saved from an uncompiled model), so a "
+                "resume from it would start with momentum at 0.".format(path))
     model.optimizer.build(model.trainable_variables)
-    expected = {}
-    model.optimizer.save_own_variables(expected)
-    if set(store) != set(expected):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        model.load_weights(path)
+    skipped = [w for w in caught if "Skipping variable loading for optimizer" in str(w.message)]
+    for w in caught:
+        if w not in skipped:
+            warnings.warn_explicit(w.message, w.category, w.filename, w.lineno)
+    if skipped:
         raise ValueError(
-            "optimizer state has {} variables but this run's optimizer has {} - was it "
-            "saved with a different --lr-schedule or --mixed-precision setting?".format(
-                len(store), len(expected)))
-    model.optimizer.load_own_variables(store)
+            "the optimizer state in {} doesn't match this run's optimizer - was it saved "
+            "with a different --lr-schedule or --mixed-precision setting? ({})".format(
+                path, skipped[0].message))
 
 
 class RangeTestLRCallback(Callback):
@@ -565,7 +531,7 @@ def run_training(cmd_line_args=None):
     parser.add_argument("--plateau-min-delta", type=float, default=0.005, help="--lr-schedule plateau only: minimum val_loss improvement to count as 'still improving' and reset --plateau-patience's wait counter. Default: 0.005 - NOT Keras's own default of 1e-4, which measured 30-50x smaller than this project's real epoch-to-epoch val_loss noise (stdev ~0.0048-0.0162 across the b15c192 mb1024 lr1p6 run's two LR phases). At 1e-4, noise alone registers a 'new best' often enough that the patience counter rarely reaches --plateau-patience even during a genuine multi-epoch plateau - that run needed a manual LR cut at epoch 36 and ground for 39 more epochs (avg 0.0014/epoch) before the next one. 0.005 sits just above the quieter (lower-LR) phase's noise floor and comfortably below real early-training gains, so it filters noise-driven bests without masking genuine progress.")  # noqa: E501
     parser.add_argument("--verbose", "-v", help="Turn on verbose mode", default=False, action="store_true")  # noqa: E501
     # slightly fancier args
-    parser.add_argument("--weights", help="Name of a .h5 weights file (in the output directory) to load to resume training. Must be the latest checkpoint (weights.NNNNN.weights.h5 with NNNNN = epochs recorded in metadata.json), and the directory's optimizer_state.npz must be from that same epoch", default=None)  # noqa: E501
+    parser.add_argument("--weights", help="Name of a .h5 weights file (in the output directory) to load to resume training. Must be the latest checkpoint (weights.NNNNN.weights.h5 with NNNNN = epochs recorded in metadata.json), which also restores the optimizer's state (momentum, step count, learning rate)", default=None)  # noqa: E501
     parser.add_argument("--mixed-precision", help="Enable the mixed_float16 policy (fp16 compute, fp32 weights). Off by default: measured no benefit on this GPU/driver/model combo - 103.5ms/step with XLA+mixed precision together vs 103ms/step for XLA alone (statistically the same), despite this being an Ada GPU with Tensor Cores. XLA's fusion is apparently already capturing the available speedup here, leaving mixed precision nothing to add while still carrying its own numerical-stability surface (see the forced float32 softmax in policy.py). Only enable to re-test under different conditions (e.g. a larger batch size)", default=False, action="store_true")  # noqa: E501
     parser.add_argument("--symmetries", help="Comma-separated list of transforms, subset of noop,rot90,rot180,rot270,fliplr,flipud,diag1,diag2", default='noop,rot90,rot180,rot270,fliplr,flipud,diag1,diag2')  # noqa: E501
     parser.add_argument("--seed", help="Seed for weight initialization and for the per-position symmetry choices (train and val use seed and seed+1). Default: unseeded (a fresh, unrecoverable draw from OS entropy every run) - set this to make the exact position stream fed to the network reproducible, e.g. to replay a run that hit an anomaly.", type=int, default=None)  # noqa: E501
@@ -635,11 +601,11 @@ def run_training(cmd_line_args=None):
     # (e.g. continuing an earlier sweep's LR curve from where it left off, without
     # re-running the cheap-to-skip low end of the range again) - not an attempt to
     # resume the SAME sweep mid-step-count, which would need offset-aware accounting
-    # this callback doesn't have. The optimizer's own state (SGD momentum) is neither
-    # saved nor reloaded in this mode (unlike plateau/cosine - see OptimizerStateCallback),
-    # so a warm-started sweep has a brief (~10-50 step, matching momentum's
-    # 1/(1-momentum) memory) transient while momentum rebuilds, rather than being a
-    # bit-for-bit continuation of the original run.
+    # this callback doesn't have. The optimizer state in the checkpoint (SGD momentum) is
+    # not loaded in this mode (unlike plateau/cosine - see load_checkpoint), so a
+    # warm-started sweep has a brief (~10-50 step, matching momentum's 1/(1-momentum)
+    # memory) transient while momentum rebuilds, rather than being a bit-for-bit
+    # continuation of the original run.
 
     if args.verbose:
         if resume:
@@ -677,8 +643,12 @@ def run_training(cmd_line_args=None):
     policy = CNNPolicy.load_model(args.model)
     model_features = policy.preprocessor.get_feature_list()
     model = policy.model
-    if resume:
-        model.load_weights(os.path.join(args.out_directory, args.weights))
+    # On a resume the checkpoint is loaded after compile() below (see load_checkpoint) -
+    # only then is there an optimizer for its saved state to go into. Checked here so a
+    # wrong path fails before the (slow) validation set is materialized.
+    weights_path = os.path.join(args.out_directory, args.weights) if resume else None
+    if resume and not os.path.exists(weights_path):
+        raise ValueError("--weights {} not found".format(weights_path))
 
     # discover the pre-shuffled shards of each split
     train_shards = find_split_shards(args.train_data, "train")
@@ -732,7 +702,7 @@ def run_training(cmd_line_args=None):
         #   start_position and (with --epochs) the cosine schedule's decay horizon, while
         #   the restored optimizer iteration count says where on that curve the run is.
         # - warmup_steps: the cosine schedule's warmup length and decay_steps.
-        # - lr_schedule: the saved optimizer state has a different shape per schedule
+        # - lr_schedule: the checkpoint's optimizer state has a different shape per schedule
         #   (plateau's learning_rate is a variable, cosine's is computed from iterations).
         #   Not checked for --lr-range-test, which ignores --lr-schedule and loads no
         #   optimizer state.
@@ -752,22 +722,19 @@ def run_training(cmd_line_args=None):
                     "across a resume, or start a fresh out_directory.".format(
                         key.replace('_', '-'), prev_value, cur_value))
 
-    optimizer_state_path = os.path.join(args.out_directory, OPTIMIZER_STATE_FILE)
-    optimizer_state = None
     if resume and not args.lr_range_test:
         # Everything about the resume point is keyed off epochs_already_trained (the
         # metadata's epoch count): the data stream position, the epoch numbering, the
-        # plateau replay. Resuming from an older checkpoint would pair its weights with
-        # all of those from a later epoch, so the checkpoint and the optimizer state must
-        # both be from that same epoch. A --weights name outside the checkpoint pattern
-        # can't be checked and is taken at its word.
+        # plateau replay. Resuming from an older checkpoint would pair its weights and
+        # optimizer state with all of those from a later epoch, so the checkpoint must be
+        # from that same epoch. A --weights name outside the checkpoint pattern can't be
+        # checked and is taken at its word.
         match = re.fullmatch(r"weights\.(\d+)\.weights\.h5", os.path.basename(args.weights))
         if match and int(match.group(1)) != epochs_already_trained:
             raise ValueError(
                 "--weights {} is the checkpoint from epoch {}, but {} records {} completed "
                 "epochs: resume from the latest checkpoint.".format(
                     args.weights, int(match.group(1)), meta_file, epochs_already_trained))
-        optimizer_state = read_optimizer_state(optimizer_state_path, epochs_already_trained)
 
     meta_writer.metadata["training_data"] = args.train_data
     meta_writer.metadata["model_file"] = args.model
@@ -849,7 +816,6 @@ def run_training(cmd_line_args=None):
     plateau_state_restorer = None
     range_lr_cb = None
     lr_override_cb = None
-    optimizer_state_cb = None
     if args.lr_range_test:
         # No LearningRateSchedule object and no ReduceLROnPlateau - RangeTestLRCallback
         # owns the optimizer's learning_rate directly for the whole run, the same way
@@ -886,8 +852,9 @@ def run_training(cmd_line_args=None):
             decay_steps=max(1, total_steps - args.warmup_steps),
             warmup_target=args.learning_rate,
             warmup_steps=args.warmup_steps)
-        # On a resume, the restored optimizer state (below) brings back the iteration
-        # counter this schedule is evaluated at, so the run continues the same curve.
+        # On a resume, the optimizer state loaded from the checkpoint (see
+        # load_checkpoint) brings back the iteration counter this schedule is evaluated
+        # at, so the run continues the same curve.
         sgd = SGD(learning_rate=lr_schedule, momentum=args.momentum, nesterov=True)
     else:
         # plateau: no LearningRateSchedule object - ReduceLROnPlateau mutates the
@@ -897,10 +864,12 @@ def run_training(cmd_line_args=None):
         # None so TrainingDiagnosticsCallback knows to read the live optimizer value
         # instead of calling a schedule object.
         #
-        # Resume handling: the restored optimizer state (below) brings back the
+        # Resume handling: the optimizer state loaded from the checkpoint brings back the
         # learning_rate wherever ReduceLROnPlateau / lr_override.txt left it, so the
-        # optimizer's initial value here only matters for a fresh start, and warmup is
-        # skipped entirely on a resume (it only makes sense for a genuinely fresh start).
+        # optimizer's initial value here only matters for a fresh start. A resume that
+        # stopped partway through warmup continues the ramp from where it was (the
+        # checkpoint's LR is overwritten on the first batch, as warmup owns the LR until
+        # it's done); one past warmup gets no warmup callback at all.
         # ReduceLROnPlateau's own best/wait/cooldown_counter bookkeeping isn't optimizer
         # state, so it's replayed from the metadata history instead - see
         # _replay_plateau_state, and re-applied at the start of fit() by
@@ -913,8 +882,11 @@ def run_training(cmd_line_args=None):
             resumed_best, resumed_wait, resumed_cooldown = None, 0, 0
         lr_schedule = None
         sgd = SGD(learning_rate=args.warmup_start_lr, momentum=args.momentum, nesterov=True)
-        if not resume:
-            warmup_cb = WarmupCallback(args.warmup_steps, args.warmup_start_lr, args.learning_rate)
+        # <=, not <: the ramp sets the target LR itself on step warmup_steps.
+        completed_steps = epochs_already_trained * steps_per_epoch
+        if completed_steps <= args.warmup_steps:
+            warmup_cb = WarmupCallback(args.warmup_steps, args.warmup_start_lr,
+                                       args.learning_rate, start_step=completed_steps)
         plateau_cb = ReduceLROnPlateau(
             monitor="val_loss", factor=args.plateau_factor, patience=args.plateau_patience,
             cooldown=args.plateau_cooldown, min_lr=args.plateau_min_lr,
@@ -939,14 +911,13 @@ def run_training(cmd_line_args=None):
                  prediction_entropy],
         jit_compile=True)
 
-    if not args.lr_range_test:
-        optimizer_state_cb = OptimizerStateCallback(args.out_directory)
-    if optimizer_state is not None:
-        # After compile() - see apply_optimizer_state.
-        apply_optimizer_state(model, optimizer_state)
-        del optimizer_state
+    if resume:
+        # After compile() - see load_checkpoint. --lr-range-test starts every sweep with a
+        # fresh optimizer (see the note at the top of this function).
+        load_checkpoint(model, weights_path, with_optimizer=not args.lr_range_test)
         if args.verbose:
-            print("restored optimizer state from {}".format(optimizer_state_path))
+            print("loaded weights{} from {}".format(
+                "" if args.lr_range_test else " and optimizer state", weights_path))
 
     range_diagnostics = None
     if args.lr_range_test:
@@ -974,10 +945,12 @@ def run_training(cmd_line_args=None):
     # diagnostics/meta_writer doesn't matter, only relative to plateau_cb. lr_override_cb
     # must also run after plateau_cb (see its docstring) - an override should always win
     # over whatever plateau_cb just decided this epoch, not get silently clobbered by it.
-    # optimizer_state_cb must run after plateau_cb and lr_override_cb: under plateau the
-    # saved state includes the learning_rate variable, which must be the value they
-    # leave for the next epoch, so a resume picks up a cut made in the last epoch.
-    callbacks = [checkpointer]
+    # checkpointer must run after plateau_cb and lr_override_cb: under plateau the
+    # checkpoint's optimizer state includes the learning_rate variable, which must be the
+    # value they leave for the next epoch, so a resume picks up a cut made in the last
+    # epoch. It runs before meta_writer, so metadata.json never records an epoch whose
+    # checkpoint wasn't written.
+    callbacks = []
     if warmup_cb is not None:
         callbacks.append(warmup_cb)
     if range_lr_cb is not None:
@@ -990,8 +963,7 @@ def run_training(cmd_line_args=None):
         callbacks.append(plateau_cb)
     if lr_override_cb is not None:
         callbacks.append(lr_override_cb)
-    if optimizer_state_cb is not None:
-        callbacks.append(optimizer_state_cb)
+    callbacks.append(checkpointer)
     if plateau_state_restorer is not None:
         callbacks.append(plateau_state_restorer)
     callbacks.append(meta_writer)

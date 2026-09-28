@@ -12,7 +12,7 @@ import glob
 import json
 import shutil
 
-import numpy as np
+import h5py
 import pytest
 from keras import mixed_precision
 
@@ -89,8 +89,11 @@ def _metadata(out_dir):
         return json.load(f)
 
 
-def _state_path(out_dir):
-    return os.path.join(str(out_dir), trainer.OPTIMIZER_STATE_FILE)
+def _checkpoint_iterations(out_dir, epoch):
+    """The optimizer step count stored inside a weights checkpoint."""
+    path = os.path.join(str(out_dir), "weights.{:05d}.weights.h5".format(epoch))
+    with h5py.File(path, "r") as f:
+        return int(f["optimizer/vars/0"][()])  # the optimizer's first variable: iteration
 
 
 @pytest.fixture(scope="module")
@@ -121,12 +124,14 @@ RESUME_COSINE = ("--epochs", "3", "--weights", "weights.00002.weights.h5")
 
 # --- fresh runs ------------------------------------------------------------------------
 
-def test_fresh_run_writes_checkpoints_state_and_metadata(data, cosine_run):
+def test_fresh_run_writes_checkpoints_and_metadata(data, cosine_run):
     weights = sorted(os.path.basename(p) for p in glob.glob(str(cosine_run / "weights.*")))
     assert weights == ["weights.00001.weights.h5", "weights.00002.weights.h5",
                        "weights.00003.weights.h5"]
-    with np.load(_state_path(cosine_run)) as f:
-        assert int(f["completed_epochs"]) == 3
+    # Each checkpoint carries the optimizer state as of its own epoch's end.
+    assert [_checkpoint_iterations(cosine_run, e) for e in (1, 2, 3)] == [
+        STEPS_PER_EPOCH, 2 * STEPS_PER_EPOCH, 3 * STEPS_PER_EPOCH]
+    assert not (cosine_run / "optimizer_state.npz").exists()
 
     meta = _metadata(cosine_run)
     assert len(meta["epochs"]) == 3
@@ -169,8 +174,7 @@ def test_cosine_resume_matches_the_uninterrupted_run(data, cosine_run, stopped):
 def test_plateau_fresh_run(data, tmp_path):
     out = tmp_path / "plateau"
     _train(data, out, "--epochs", "2", "--lr-schedule", "plateau")
-    with np.load(_state_path(out)) as f:
-        assert int(f["completed_epochs"]) == 2
+    assert _checkpoint_iterations(out, 2) == 2 * STEPS_PER_EPOCH
     lrs = [e["learning_rate"] for e in _metadata(out)["epochs"]]
     assert lrs == pytest.approx([0.05, 0.05])  # warmup finished within epoch 1, no cut yet
 
@@ -191,6 +195,25 @@ def test_plateau_resume_keeps_a_cut_made_in_the_last_epoch(data, tmp_path):
     assert _metadata(out)["epochs"][1]["learning_rate"] == pytest.approx(0.007, rel=1e-5)
 
 
+def test_plateau_resume_mid_warmup_continues_the_ramp(data, tmp_path):
+    """Warmup of 6 steps at 4 steps per epoch: a run stopped after epoch 1 is partway
+    through it. The resumed epoch 2 must finish the ramp exactly as the uninterrupted run
+    does, not freeze at the checkpoint's partly-warmed LR."""
+    extra = ("--epochs", "2", "--lr-schedule", "plateau", "--warmup-steps", "6")
+    full = tmp_path / "full"
+    _train(data, full, *extra)
+    split = tmp_path / "split"
+    _train_interrupted(data, split, 1, *extra)
+    _train(data, split, *extra, "--weights", "weights.00001.weights.h5")
+
+    full_epochs, split_epochs = _metadata(full)["epochs"], _metadata(split)["epochs"]
+    assert split_epochs[0]["learning_rate"] < 0.05  # stopped partway through warmup
+    assert split_epochs[1]["learning_rate"] == pytest.approx(0.05)  # ramp finished
+    assert split_epochs[1]["learning_rate"] == pytest.approx(
+        full_epochs[1]["learning_rate"], rel=1e-6)
+    assert split_epochs[1]["loss"] == pytest.approx(full_epochs[1]["loss"], rel=1e-4)
+
+
 def test_plateau_resume_honors_lr_override_file(data, tmp_path):
     out = tmp_path / "plateau"
     _train(data, out, "--epochs", "1", "--lr-schedule", "plateau")
@@ -204,18 +227,9 @@ def test_plateau_resume_honors_lr_override_file(data, tmp_path):
 
 # --- resume guards ---------------------------------------------------------------------
 
-def test_resume_without_optimizer_state_raises(data, stopped):
-    os.remove(_state_path(stopped))
-    with pytest.raises(ValueError, match="optimizer_state.npz not found"):
-        _train(data, stopped, *RESUME_COSINE)
-
-
-def test_resume_with_stale_optimizer_state_raises(data, stopped):
-    with np.load(_state_path(stopped)) as f:
-        store = dict(f)
-    store["completed_epochs"] = np.int64(1)
-    np.savez(_state_path(stopped), **store)
-    with pytest.raises(ValueError, match="saved after epoch 1, but metadata.json records 2"):
+def test_resume_with_missing_checkpoint_raises(data, stopped):
+    os.remove(str(stopped / "weights.00002.weights.h5"))
+    with pytest.raises(ValueError, match="weights.00002.weights.h5 not found"):
         _train(data, stopped, *RESUME_COSINE)
 
 
@@ -260,8 +274,15 @@ def test_lr_range_test_writes_step_diagnostics(data, tmp_path):
     # grad_norm only reaches the logs through the monkey-patched train_step.
     assert all(r["grad_norm"] is not None and r["grad_norm"] > 0 for r in records)
     assert all(r["loss_scale"] is None for r in records)  # float32: no loss scaling
-    # A range test starts every sweep with a fresh optimizer, so it saves no state.
-    assert not os.path.exists(_state_path(out))
+
+
+def test_lr_range_test_warm_start_takes_weights_but_a_fresh_optimizer(data, tmp_path):
+    out = tmp_path / "range"
+    range_args = ("--lr-range-test", "--range-check-every", "1", "--range-warmup-steps", "2")
+    _train(data, out, "--epochs", "1", *range_args)
+    _train(data, out, "--epochs", "2", "--weights", "weights.00001.weights.h5", *range_args)
+    # The warm-started sweep's optimizer began again at step 0, not at the first run's end.
+    assert _checkpoint_iterations(out, 2) == STEPS_PER_EPOCH
 
 
 # --- other argument guards -------------------------------------------------------------

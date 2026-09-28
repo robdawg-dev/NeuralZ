@@ -171,6 +171,33 @@ def test_warmup_stops_touching_lr_when_done():
     assert model.optimizer.learning_rate == 0.3
 
 
+@pytest.mark.parametrize("start_step", [1, 3, 4])
+def test_warmup_resumed_partway_continues_the_same_ramp(start_step):
+    """A resume that stopped partway through warmup: from start_step on, the ramp sets
+    exactly the LRs an uninterrupted warmup would have - including the final step, which
+    sets the target itself (start_step == warmup_steps)."""
+    model = fake_model()
+    full = trainer.WarmupCallback(warmup_steps=4, start_lr=0.0, target_lr=1.0)
+    full.set_model(model)
+    expected = lr_sequence(full, model, 7)
+
+    model = fake_model()
+    resumed = trainer.WarmupCallback(warmup_steps=4, start_lr=0.0, target_lr=1.0,
+                                     start_step=start_step)
+    resumed.set_model(model)
+    assert lr_sequence(resumed, model, 7 - start_step) == pytest.approx(expected[start_step:])
+    assert resumed.is_done
+
+
+def test_warmup_resumed_past_the_end_is_done_and_leaves_the_lr_alone():
+    model = fake_model(learning_rate=0.3)
+    cb = trainer.WarmupCallback(warmup_steps=4, start_lr=0.0, target_lr=1.0, start_step=5)
+    cb.set_model(model)
+    assert cb.is_done
+    cb.on_train_batch_begin(0)
+    assert model.optimizer.learning_rate == 0.3
+
+
 def test_warmup_zero_steps_sets_target_once():
     model = fake_model()
     cb = trainer.WarmupCallback(warmup_steps=0, start_lr=0.5, target_lr=1.0)
