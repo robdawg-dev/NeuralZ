@@ -54,6 +54,15 @@ def test_parse_sgf_move(value, expected):
     assert _parse_sgf_move(value) == expected
 
 
+def test_sgf_library_iterates_in_comprehensions():
+    """sgf 0.5's NodeIterator lacks __iter__; AlphaGo.util completes it. Without that, the
+    comprehension below raises TypeError on Python 3.13+."""
+    game = sgflib.parse("(;GM[1];B[aa];W[bb])")[0]
+    assert [n.properties["B" if i == 0 else "W"] for i, n in enumerate(game.rest)] == [
+        ["aa"], ["bb"]]
+    assert sum(1 for _n in game.rest) == 2
+
+
 def test_init_gamestate_defaults_to_empty_19x19_black_to_move():
     gs = _sgf_init_gamestate(_root("(;GM[1]FF[4])"))
     assert gs.get_size() == 19

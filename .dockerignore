@@ -1,0 +1,7 @@
+# The image only needs the dependency definitions - the code is bind-mounted at /workspace
+# at run time (docker-compose.yml). Excluding everything else keeps `docker build` from
+# sending game_data/, workspace/ etc. (hundreds of thousands of files) as build context.
+*
+!pyproject.toml
+!uv.lock
+!.python-version

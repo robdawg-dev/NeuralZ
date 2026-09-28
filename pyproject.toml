@@ -1,15 +1,24 @@
 [project]
 name = "rocalphago"
 version = "0.1.0"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "cython>=3.3.0",
     "h5py>=3.11.0,<3.15.0",
+    # Pinned to the version the trained models were produced with (the official
+    # tensorflow:2.21.0-gpu image's), rather than left to float with TF's own
+    # "keras>=3.12.0" - a Keras change is verified on its own (TF_UPGRADE_PLAN.md).
+    "keras==3.13.2",
     "sgf==0.5",
     "tensorflow==2.21.0",
 ]
 
 [project.optional-dependencies]
+# The Docker image only: TensorFlow's CUDA/cuDNN libraries as pip packages. Linux-only -
+# TF has no GPU support on native Windows, where the base CPU build is used.
+gpu = [
+    "tensorflow[and-cuda]==2.21.0; sys_platform == 'linux'",
+]
 # plot_network_output (AlphaGo/util.py) and benchmarks/_plot_sgf_heatmaps.py only -
 # never imported by the trainer or any play_tests/ script that doesn't visualize.
 viz = [

@@ -3,6 +3,14 @@ import numpy as np
 import sgf
 from AlphaGo import go
 
+# sgf 0.5 (unmaintained) defines NodeIterator with __next__ but no __iter__, so it's not a
+# complete iterator. A plain `for node in game.rest` still works, but since Python 3.13 a
+# comprehension or generator expression over game.rest raises
+# "TypeError: 'NodeIterator' object is not iterable". Completing the protocol here fixes
+# every use; anything in this project that parses SGF imports this module.
+if not hasattr(sgf.NodeIterator, "__iter__"):
+    sgf.NodeIterator.__iter__ = lambda self: self
+
 # for board location indexing
 LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
