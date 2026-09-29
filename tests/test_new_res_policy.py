@@ -2,6 +2,7 @@
 import os
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
 
+import keras
 import numpy as np
 import pytest
 
@@ -56,16 +57,19 @@ def test_only_the_output_conv_has_a_bias():
 ])
 def test_global_pooling_reaches_across_the_board(pooling, far_changes):
     """2 blocks see 5 points away without pooling (3x3 stem + 4 3x3 convs) - a stone in
-    one corner can't move the far corner's logit unless something pools the board."""
+    one corner can't reach the far corner unless something pools the board.
+
+    Probed at the network's last residual or head sum (its last Add), not at the output:
+    a pooled bias shifts every point alike, which the ReLU and softmax after it can hide."""
+    keras.utils.set_random_seed(0)
     policy = NewResPolicy(FEATURES, **dict(SMALL, **pooling))
+    last_add = [layer for layer in policy.model.layers if type(layer).__name__ == "Add"][-1]
+    probe = keras.Model(policy.model.inputs, last_add.output)
     x = policy.preprocessor.state_to_tensor(GameState())
     changed = x.copy()
     changed[0, 0, 0, :] = 1.0 - changed[0, 0, 0, :]
-    before, after = policy.forward(x)[0], policy.forward(changed)[0]
-    # The far corner's probability relative to its neighbour's cancels the softmax's
-    # normalization, so it only moves if the corner stone reached those two logits.
-    moved = not np.isclose(after[360] / after[359], before[360] / before[359], rtol=1e-6)
-    assert moved == far_changes
+    before, after = probe(x).numpy()[0, 18, 18], probe(changed).numpy()[0, 18, 18]
+    assert (not np.allclose(after, before, rtol=0, atol=1e-6)) == far_changes
 
 
 def test_gpool_channels_must_leave_regular_channels():
