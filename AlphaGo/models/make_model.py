@@ -1,9 +1,11 @@
 """Create a model JSON - the architecture and input features a training run starts from.
 
+    python -m AlphaGo.models.make_model newres --blocks 15 --filters 192
     python -m AlphaGo.models.make_model restower --blocks 15 --filters 192 --head conv_norm
     python -m AlphaGo.models.make_model cnn --layers 12 --filters 192
 
-writes workspace/models/model_restower_b15c192_convnorm.json (or model_cnn_l12c192.json),
+writes workspace/models/model_newres_b15c192_g5.json (model_restower_b15c192_convnorm.json,
+model_cnn_l12c192.json),
 ready for supervised_policy_trainer.py and lr_range_test.py. The JSON fixes the feature
 planes the network reads, which must match the shards it trains on: by default the full
 set convert_shuffled.py builds, or --features-from to copy them from existing shards.
@@ -12,7 +14,7 @@ import argparse
 import os
 import sys
 
-from AlphaGo.models.policy import CNNPolicy, ResTowerPolicy
+from AlphaGo.models.policy import CNNPolicy, NewResPolicy, ResTowerPolicy
 from AlphaGo.preprocessing.convert_shuffled import ALL_FEATURES
 from AlphaGo.training.shard_stream import dataset_info, find_split_shards
 
@@ -39,6 +41,26 @@ def build_parser():
                              "weights only fit the exact model JSON they were trained with.")
 
     architectures = parser.add_subparsers(dest="architecture", required=True)
+
+    newres = architectures.add_parser(
+        "newres", parents=[common],
+        help="NewResPolicy: a pre-activation residual tower with global pooling",
+        description="NewResPolicy - see its create_network docstring for the options.")
+    newres.add_argument("--blocks", type=int, required=True,
+                        help="Residual blocks, each two conv layers")
+    newres.add_argument("--filters", type=int, required=True,
+                        help="Width of the residual stream")
+    newres.add_argument("--gpool-every", type=int, default=5,
+                        help="Every this-many-th block is a global pooling block; 0 for "
+                             "none. Default: 5")
+    newres.add_argument("--gpool-channels", type=int, default=64,
+                        help="Channels a pooling block pools. Default: 64")
+    newres.add_argument("--head-channels", type=int, default=32,
+                        help="Width of the policy head's intermediate layer. Default: 32")
+    newres.add_argument("--no-head-gpool", dest="head_gpool", action="store_false",
+                        help="Leave out the policy head's pooled whole-board bias")
+    newres.add_argument("--stem-filter-width", type=int, default=3,
+                        help="Kernel size of the stem conv. Default: 3")
 
     restower = architectures.add_parser(
         "restower", parents=[common],
@@ -88,6 +110,14 @@ def _features_and_board(args):
 
 def _network(args):
     """(class, create_network kwargs, default file name) for the chosen architecture."""
+    if args.architecture == "newres":
+        kwargs = {"num_blocks": args.blocks, "filters": args.filters,
+                  "gpool_every": args.gpool_every, "gpool_channels": args.gpool_channels,
+                  "head_channels": args.head_channels, "head_gpool": args.head_gpool,
+                  "stem_filter_width": args.stem_filter_width}
+        name = "model_newres_b{}c{}_g{}{}.json".format(
+            args.blocks, args.filters, args.gpool_every, "" if args.head_gpool else "_nohg")
+        return NewResPolicy, kwargs, name
     if args.architecture == "restower":
         kwargs = {"num_blocks": args.blocks, "filters": args.filters, "head": args.head,
                   "head_channels": args.head_channels,

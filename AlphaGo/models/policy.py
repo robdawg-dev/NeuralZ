@@ -1,5 +1,6 @@
 from keras.models import Model, Sequential
-from keras.layers import Input, BatchNormalization, Conv2D, add, Activation, Flatten, Dense
+from keras.layers import (Input, BatchNormalization, Conv2D, add, Activation, Flatten, Dense,
+                          Concatenate, GlobalAveragePooling2D, GlobalMaxPooling2D, Reshape)
 from keras.initializers import VarianceScaling
 from AlphaGo.util import flatten_idx
 from AlphaGo.models.nn_util import Bias, NeuralNetBase, neuralnet
@@ -317,5 +318,131 @@ class ResTowerPolicy(CNNPolicy):
         # Forced to float32 regardless of a global mixed-precision policy - same reason
         # as policy.py's heads: keep the softmax/loss computation at full precision.
         output = Activation("softmax", dtype="float32")(x)
+
+        return Model(inputs=[model_input], outputs=[output])
+
+
+def _global_bias(x, out_channels):
+    """KataGo-style global pooling: x's channels, normalized, pooled to their mean and max
+    over the whole board, and mapped to a per-channel bias of width out_channels - to be
+    added at every point of a spatial feature map. Gives every point
+    whole-board context (ko, the status of large groups, who is ahead) in one step, where
+    3x3 convolutions spread information one point per layer."""
+    g = BatchNormalization()(x)
+    g = Activation("relu")(g)
+    pooled = Concatenate()([GlobalAveragePooling2D()(g), GlobalMaxPooling2D()(g)])
+    bias = Dense(out_channels, use_bias=False, kernel_initializer="he_normal")(pooled)
+    return Reshape((1, 1, out_channels))(bias)
+
+
+@neuralnet
+class NewResPolicy(CNNPolicy):
+    """Pre-activation residual tower with global pooling, after KataGo's convnets
+    (python/katago/train/model_pytorch.py in KataGo v1.18.2).
+
+    Differs from ResTowerPolicy (AlphaGo Zero's post-activation tower):
+    - Pre-activation blocks, x + conv(relu(BN(conv(relu(BN(x)))))): the residual stream is
+      a clean identity path, and one BN + ReLU after the last block normalizes it before
+      the head. ResTowerPolicy's stream grows unnormalized through the tower (the reason
+      its head='conv_norm' exists).
+    - Global pooling blocks: in every gpool_every-th block the first conv is split into
+      filters - gpool_channels regular channels and gpool_channels pooled ones, whose
+      board-wide mean and max become a per-channel bias on the regular ones (see
+      _global_bias). KataGo's b15c192 has two such blocks; its recommended nets one in
+      three. KataGo's third pooled value, a mean scaled by board size, is constant on a
+      fixed board and left out.
+    - The policy head, KataGo's shape: a 1x1 conv to head_channels, plus (head_gpool) a
+      pooled whole-board bias, then BN + ReLU and a 1x1 conv to one channel with small
+      initial weights. No pass output (this codebase's action space has none).
+    - No conv biases - every conv output reaches a BN, which removes them.
+
+    Kept as in ResTowerPolicy: BatchNorm in every block (KataGo's current nets instead use
+    a single norm at the end of the trunk with fixed-scale initialization and adaptive
+    weight decay), ReLU, he_normal initialization, the policy-only output over
+    board*board points.
+    """
+
+    @staticmethod
+    def create_network(**kwargs):
+        """
+        Keyword Arguments:
+        - input_dim:          depth of features processed by the stem (no default)
+        - board:              width of the go board (default 19)
+        - filters:            width of the residual stream (default 192)
+        - num_blocks:         number of residual blocks, each with 2 conv layers
+                              (default 15)
+        - gpool_every:        every this-many-th block is a global pooling block, counting
+                              from the first (default 5: blocks 5, 10, 15 of 15); 0 for none
+        - gpool_channels:     channels of a pooling block's first conv that are pooled
+                              (default 64, KataGo's b15c192 value); the other
+                              filters - gpool_channels stay spatial
+        - head_channels:      width of the policy head's intermediate layer (default 32)
+        - head_gpool:         whether the policy head adds a pooled whole-board bias
+                              (default True)
+        - stem_filter_width:  kernel size of the stem conv (default 3)
+        """
+        defaults = {
+            "board": 19,
+            "filters": 192,
+            "num_blocks": 15,
+            "gpool_every": 5,
+            "gpool_channels": 64,
+            "head_channels": 32,
+            "head_gpool": True,
+            "stem_filter_width": 3,
+        }
+        params = dict(defaults)
+        params.update(kwargs)
+        board = params["board"]
+        filters = params["filters"]
+        gpool_channels = params["gpool_channels"]
+        if params["gpool_every"] and not 0 < gpool_channels < filters:
+            raise ValueError("gpool_channels must be between 0 and filters ({}), got {}"
+                             .format(filters, gpool_channels))
+
+        def conv(channels, width, x):
+            return Conv2D(channels, width, padding="same", use_bias=False,
+                          kernel_initializer="he_normal", data_format="channels_last")(x)
+
+        model_input = Input(shape=(board, board, params["input_dim"]))
+
+        # Stem: a plain conv straight into the residual stream - the first block's BN + ReLU
+        # normalizes it.
+        x = conv(filters, params["stem_filter_width"], model_input)
+
+        for i in range(1, params["num_blocks"] + 1):
+            h = BatchNormalization()(x)
+            h = Activation("relu")(h)
+            if params["gpool_every"] and i % params["gpool_every"] == 0:
+                regular = conv(filters - gpool_channels, 3, h)
+                pooled = conv(gpool_channels, 3, h)
+                h = add([regular, _global_bias(pooled, filters - gpool_channels)])
+            else:
+                h = conv(filters, 3, h)
+            h = BatchNormalization()(h)
+            h = Activation("relu")(h)
+            h = conv(filters, 3, h)
+            x = add([x, h])
+
+        x = BatchNormalization()(x)
+        x = Activation("relu")(x)
+
+        head = params["head_channels"]
+        p = conv(head, 1, x)
+        if params["head_gpool"]:
+            p = add([p, _global_bias(conv(head, 1, x), head)])
+        p = BatchNormalization()(p)
+        p = Activation("relu")(p)
+        # scale=0.6 -> He-normal (scale=2.0) with 0.3x the usual variance, so the output
+        # starts with small logits - as ResTowerPolicy's head='conv_norm' and KataGo's head.
+        p = Conv2D(1, 1, padding="same", use_bias=True, data_format="channels_last",
+                   kernel_initializer=VarianceScaling(
+                       scale=0.6, mode="fan_in", distribution="truncated_normal"))(p)
+        p = Flatten()(p)
+        p = Bias()(p)
+
+        # Forced to float32 regardless of a global mixed-precision policy - same reason
+        # as CNNPolicy's: keep the softmax/loss computation at full precision.
+        output = Activation("softmax", dtype="float32")(p)
 
         return Model(inputs=[model_input], outputs=[output])

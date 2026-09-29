@@ -6,12 +6,14 @@ import pytest
 
 from AlphaGo.models import make_model as mm
 from AlphaGo.models.nn_util import NeuralNetBase
-from AlphaGo.models.policy import CNNPolicy, ResTowerPolicy
+from AlphaGo.models.policy import CNNPolicy, NewResPolicy, ResTowerPolicy
 from AlphaGo.preprocessing.convert_shuffled import ALL_FEATURES
 from tests.test_convert_shuffled import FEATURES, _run, _selection
 
 RESTOWER = ["restower", "--blocks", "2", "--filters", "8", "--head", "conv_norm"]
 CNN = ["cnn", "--layers", "2", "--filters", "8"]
+NEWRES = ["newres", "--blocks", "2", "--filters", "8", "--gpool-every", "2",
+          "--gpool-channels", "4"]
 
 
 @pytest.fixture
@@ -37,6 +39,8 @@ def _load(path):
 @pytest.mark.parametrize("args,name,cls", [
     (RESTOWER, "model_restower_b2c8_convnorm.json", ResTowerPolicy),
     (CNN, "model_cnn_l2c8.json", CNNPolicy),
+    (NEWRES, "model_newres_b2c8_g2.json", NewResPolicy),
+    (NEWRES + ["--no-head-gpool"], "model_newres_b2c8_g2_nohg.json", NewResPolicy),
 ])
 def test_default_output_is_named_from_the_options(in_tmp, args, name, cls):
     out = mm.make_model(args)
@@ -54,6 +58,10 @@ def test_default_output_is_named_from_the_options(in_tmp, args, name, cls):
     (CNN + ["--first-filter-width", "3", "--kernel-initializer", "he_normal"], CNNPolicy,
      {"layers": 2, "filters_per_layer": 8, "filter_width_1": 3,
       "kernel_initializer": "he_normal"}),
+    (NEWRES + ["--head-channels", "16", "--no-head-gpool", "--stem-filter-width", "5"],
+     NewResPolicy,
+     {"num_blocks": 2, "filters": 8, "gpool_every": 2, "gpool_channels": 4,
+      "head_channels": 16, "head_gpool": False, "stem_filter_width": 5}),
 ])
 def test_builds_the_same_network_as_the_class_directly(in_tmp, args, cls, kwargs):
     made = _load(in_tmp / mm.make_model(args)).model
@@ -108,6 +116,7 @@ def test_refuses_to_overwrite_without_force(in_tmp):
     ["restower", "--filters", "8", "--head", "conv"],
     ["restower", "--blocks", "2", "--filters", "8"],
     ["cnn", "--layers", "2"],
+    ["newres", "--blocks", "2"],
     [],
 ])
 def test_architecture_options_are_required(in_tmp, args):

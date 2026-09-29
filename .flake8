@@ -7,6 +7,7 @@ per-file-ignores =
     run_gtp_player.py: E402
     tests/test_lr_override.py: E402
     tests/test_make_model.py: E402
+    tests/test_new_res_policy.py: E402
     tests/test_optimizer_state.py: E402
     tests/test_trainer_callbacks.py: E402
     tests/test_trainer_integration.py: E402
