@@ -17,8 +17,8 @@ from keras.callbacks import (
     ModelCheckpoint, Callback, ReduceLROnPlateau, TerminateOnNaN)
 from AlphaGo.models.policy import CNNPolicy
 from AlphaGo.training.shard_stream import (
-    BATCH_TRANSFORMATIONS, find_split_shards, dataset_info, shard_batch_generator,
-    validation_arrays)
+    BATCH_TRANSFORMATIONS, decode_on_device, find_split_shards, dataset_info,
+    shard_batch_generator, validation_arrays)
 
 
 def prediction_entropy(y_true, y_pred):
@@ -29,30 +29,32 @@ def prediction_entropy(y_true, y_pred):
     return -ops.sum(p * ops.log(p), axis=-1)
 
 
-def sanity_checked_generator(base_generator, out_directory, label, check_every=50):
-    """Wraps a batch generator, checking the first 5 batches and every check_every-th for
-    NaNs, X outside [0, 1] and Y rows that don't sum to 1. A bad batch is printed and
-    appended to out_directory/batch_sanity_log.json, so data corruption shows up at the
-    step it starts - including a stream that's wrong from step 0, which epoch-level
-    metrics alone don't reveal.
+def sanity_checked_generator(base_generator, out_directory, label, n_transforms,
+                             check_every=50):
+    """Wraps a ((packed, choices), Y) batch generator, checking the first 5 batches and
+    every check_every-th for Y rows that don't sum to 1 and symmetry choices outside
+    [0, n_transforms). (The packed states themselves are bits - 0/1 by construction.) A
+    bad batch is printed and appended to out_directory/batch_sanity_log.json, so data
+    corruption shows up at the step it starts - including a stream that's wrong from step
+    0, which epoch-level metrics alone don't reveal.
     """
     log_path = os.path.join(out_directory, "batch_sanity_log.json")
     step = 0
-    for X, Y in base_generator:
+    for (packed, choices), Y in base_generator:
         step += 1
         if step % check_every == 0 or step <= 5:
             row_sums = Y.sum(axis=1)
-            x_nan = int(np.isnan(X).sum())
-            x_min, x_max = float(X.min()), float(X.max())
             y_min, y_max = float(row_sums.min()), float(row_sums.max())
-            bad = (x_nan > 0 or x_min < -1e-3 or x_max > 1 + 1e-3
-                   or abs(y_min - 1.0) > 1e-3 or abs(y_max - 1.0) > 1e-3)
+            c_min, c_max = int(choices.min()), int(choices.max())
+            bad = (abs(y_min - 1.0) > 1e-3 or abs(y_max - 1.0) > 1e-3
+                   or c_min < 0 or c_max >= n_transforms)
             if bad:
-                print("\n*** BAD BATCH detected: {} step {}: X in [{:.4f}, {:.4f}] "
-                      "({} NaN), Y row-sums in [{:.4f}, {:.4f}] (should be exactly 1.0) "
-                      "***".format(label, step, x_min, x_max, x_nan, y_min, y_max))
-                entry = {"label": label, "step": step, "X_min": x_min, "X_max": x_max,
-                         "X_nan_count": x_nan, "Y_row_sum_min": y_min, "Y_row_sum_max": y_max}
+                print("\n*** BAD BATCH detected: {} step {}: Y row-sums in [{:.4f}, {:.4f}] "
+                      "(should be exactly 1.0), symmetry choices in [{}, {}] (should be in "
+                      "[0, {})) ***".format(label, step, y_min, y_max, c_min, c_max,
+                                            n_transforms))
+                entry = {"label": label, "step": step, "Y_row_sum_min": y_min,
+                         "Y_row_sum_max": y_max, "choice_min": c_min, "choice_max": c_max}
                 existing = []
                 if os.path.exists(log_path):
                     with open(log_path) as f:
@@ -60,7 +62,7 @@ def sanity_checked_generator(base_generator, out_directory, label, check_every=5
                 existing.append(entry)
                 with open(log_path, "w") as f:
                     json.dump(existing, f, indent=2)
-        yield X, Y
+        yield (packed, choices), Y
 
 
 class WarmupCallback(Callback):
@@ -333,7 +335,8 @@ def set_up_run(args, resume_setting_keys, require_latest_checkpoint):
 
     Returns a SimpleNamespace: model, resume, weights_path, meta_writer,
     epochs_already_trained, steps_per_epoch, total_steps, train_data_generator,
-    val_dataset, checkpointer.
+    val_dataset, checkpointer, and decode - the (board_size, n_features, symmetries) that
+    decode_on_device needs to unpack the batches (see fit_run).
     """
     resume = args.weights is not None
 
@@ -388,7 +391,8 @@ def set_up_run(args, resume_setting_keys, require_latest_checkpoint):
         model=model, resume=resume, weights_path=weights_path, meta_writer=meta_writer,
         epochs_already_trained=epochs_already_trained, steps_per_epoch=steps_per_epoch,
         total_steps=total_steps, train_data_generator=train_data_generator,
-        val_dataset=val_dataset, checkpointer=checkpointer)
+        val_dataset=val_dataset, checkpointer=checkpointer,
+        decode=(shards.board_size, shards.n_features, args.symmetries.strip().split(",")))
 
 
 def _load_model_and_shards(args):
@@ -416,7 +420,7 @@ def _load_model_and_shards(args):
 
     shards = types.SimpleNamespace(train=train_shards, train_sizes=train_sizes,
                                    val=val_shards, val_sizes=val_sizes,
-                                   board_size=board_size)
+                                   board_size=board_size, n_features=n_features)
     return policy.model, shards
 
 
@@ -500,7 +504,7 @@ def _open_data(args, shards, epochs_already_trained):
         shard_batch_generator(shards.train, shards.train_sizes, args.minibatch,
                               shards.board_size, symmetries, seed=train_seed,
                               start_position=start_position),
-        args.out_directory, "train")
+        args.out_directory, "train", len(symmetries))
 
     # Validation is a fixed prefix of val/: the shards are already a uniform random
     # sample, and a fixed set means val_loss only moves because the model does.
@@ -509,14 +513,14 @@ def _open_data(args, shards, epochs_already_trained):
     print("materializing {} validation positions into fixed arrays...".format(n_val_eval))
     X_val, Y_val = validation_arrays(shards.val, shards.val_sizes, n_val_eval,
                                      shards.board_size, symmetries, seed=val_seed)
-    # Built on the CPU: from_tensor_slices() embeds the arrays in the graph, and TF would
-    # otherwise place them in GPU memory whole - ~7 GB at 100k positions, enough to run
-    # minibatch-1024 training out of GPU memory. Batches then stream to the GPU as the
-    # training data does.
+    # Packed like the training batches: ~2 KB per position rather than 69 KB of float32.
+    # Built on the CPU all the same: from_tensor_slices() embeds the arrays in the graph,
+    # and TF would otherwise place them in GPU memory whole. Batches then stream to the
+    # GPU as the training data does.
     with tf.device('/cpu:0'):
         val_dataset = tf.data.Dataset.from_tensor_slices((X_val, Y_val)).batch(args.minibatch)
     # The dataset holds its own copy; dropping the originals keeps host memory from
-    # holding it twice (at 100k positions that got the process OOM-killed).
+    # holding it twice.
     del X_val, Y_val
     import gc
     gc.collect()
@@ -531,6 +535,27 @@ def compile_model(model, optimizer):
         metrics=["accuracy", TopKCategoricalAccuracy(k=5, name="top5_accuracy"),
                  prediction_entropy],
         jit_compile=True)
+
+
+def _decode_in_steps(model, board_size, n_features, symmetries):
+    """Makes the model's train and test steps take the stream's ((packed, choices), Y)
+    batches, unpacking them with decode_on_device as the step's first operation - so on
+    the GPU, compiled into the step - then running the step it had (Keras's own, or the
+    range test's replacement) on the result.
+
+    The steps, not the model: the model itself, its weights and checkpoints stay as they
+    are, taking unpacked float planes, for everything that uses them outside training.
+    """
+    dtype = model.inputs[0].dtype
+    train_step, test_step = model.train_step, model.test_step
+
+    def decoded(data):
+        (packed, choices), y = data
+        return decode_on_device(packed, choices, board_size, n_features, symmetries,
+                                dtype), y
+
+    model.train_step = lambda data: train_step(decoded(data))
+    model.test_step = lambda data: test_step(decoded(data))
 
 
 def fit_run(run, args, lr_schedule, lr_callbacks=(), epoch_callbacks=(),
@@ -550,6 +575,7 @@ def fit_run(run, args, lr_schedule, lr_callbacks=(), epoch_callbacks=(),
     - meta_writer last: it saves the logs as they end up, and only once the epoch's
       checkpoint exists.
     """
+    _decode_in_steps(run.model, *run.decode)
     diagnostics = TrainingDiagnosticsCallback(lr_schedule, run.steps_per_epoch)
     callbacks = (list(lr_callbacks) + [TerminateOnNaN(), diagnostics] +
                  list(epoch_callbacks) + [run.checkpointer] + list(restore_callbacks) +

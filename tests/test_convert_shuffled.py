@@ -13,6 +13,7 @@ import pytest
 
 import AlphaGo.go as go
 from AlphaGo.preprocessing import convert_shuffled as conv
+from AlphaGo.training import shard_stream as ss
 
 FEATURES = "board,ones,turns_since,sensibleness,zeros"
 
@@ -69,7 +70,10 @@ def _load(split_dir):
     shards = sorted(glob.glob(os.path.join(split_dir, "shard_*.h5")))
     for path in shards:
         with h5.File(path, "r") as f:
-            for k in cols:
+            packed = f[ss.PACKED_STATES]
+            assert packed.compression == "gzip"
+            cols["states"].append(ss.unpack(packed[:], packed.attrs[ss.PLANES_SHAPE]))
+            for k in ("actions", "game_id", "move"):
                 cols[k].append(f[k][:])
             assert f["features"][()].decode() == FEATURES
     return shards, {k: np.concatenate(v) for k, v in cols.items()}
@@ -173,3 +177,40 @@ def test_shard_size_is_independent_of_bucket_size(tmp_path):
     for key in ("game_id", "move", "actions", "states"):
         assert np.array_equal(data_one[key], data_many[key]), (
             "{} differs: grouping changed the position order".format(key))
+
+
+@pytest.mark.parametrize("sizes", [[], [1], [3, 0, 5], [40] * 5])
+def test_bucket_files_round_trip_across_blocks(tmp_path, monkeypatch, sizes):
+    """Records written in any grouping read back in order, across block boundaries (a
+    block here holds ~2 records) and for an empty bucket."""
+    monkeypatch.setattr(conv, "BUCKET_BLOCK_BYTES", 5000)
+    dtype = conv.record_dtype(19, 4)
+    rng = np.random.default_rng(0)
+    batches = []
+    for n in sizes:
+        rec = np.zeros(n, dtype=dtype)
+        rec["game_id"] = rng.integers(0, 1000, n)
+        rec["state"] = rng.integers(0, 256, (n, dtype["state"].shape[0]))
+        batches.append(rec)
+    path = str(tmp_path / "bucket.bin")
+    writer = conv._BucketWriter(path)
+    for rec in batches:
+        writer.write(rec.tobytes())
+    writer.close()
+    expected = np.concatenate(batches) if batches else np.zeros(0, dtype=dtype)
+    assert np.array_equal(conv._read_bucket(path, dtype), expected)
+
+
+def test_bucket_block_size_does_not_change_the_output(tmp_path, monkeypatch):
+    """Buckets compressed in tiny blocks give the same shards as the default: blocks are
+    only how a bucket's bytes are stored."""
+    games = [(s, None) for s in range(10)]
+    sel = _selection(tmp_path, {"train": games})
+    default, tiny = str(tmp_path / "default"), str(tmp_path / "tiny")
+    _run(sel, default, "--splits", "train")
+    monkeypatch.setattr(conv, "BUCKET_BLOCK_BYTES", 5000)
+    _run(sel, tiny, "--splits", "train")
+    _s, data_default = _load(os.path.join(default, "train"))
+    _s, data_tiny = _load(os.path.join(tiny, "train"))
+    for key in data_default:
+        assert np.array_equal(data_default[key], data_tiny[key]), key

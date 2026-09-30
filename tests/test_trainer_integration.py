@@ -20,6 +20,7 @@ from keras import mixed_precision
 import AlphaGo.training.lr_range_test as range_test
 import AlphaGo.training.supervised_policy_trainer as trainer
 from AlphaGo.training.shard_stream import dataset_info, find_split_shards
+from AlphaGo.go import GameState
 from AlphaGo.models.policy import CNNPolicy
 from tests.test_convert_shuffled import FEATURES, _run, _selection
 
@@ -173,6 +174,16 @@ def test_cosine_lr_decays_after_warmup(cosine_run):
     assert lrs[0] < 0.05
     assert lrs == sorted(lrs, reverse=True)
     assert lrs[-1] == pytest.approx(0.0, abs=1e-6)  # cosine reaches its floor at total_steps
+
+
+def test_a_checkpoint_loads_into_the_policy_for_play(data, cosine_run):
+    """Training decodes packed batches inside its steps, not in the model, so a checkpoint
+    is still the plain policy's weights: it loads into the model JSON and plays."""
+    policy = CNNPolicy.load_model(data[0])
+    policy.model.load_weights(os.path.join(str(cosine_run), "weights.00003.weights.h5"))
+    moves = policy.eval_state(GameState())
+    assert len(moves) == 361
+    assert sum(p for _m, p in moves) == pytest.approx(1.0, abs=1e-4)
 
 
 def test_metadata_records_positions_per_epoch(cosine_run):
@@ -352,10 +363,11 @@ def test_training_and_range_test_build_identical_runs(data, tmp_path):
     for wa, wb in zip(a.model.get_weights(), b.model.get_weights()):
         assert (wa == wb).all()
     for _ in range(3):
-        (xa, ya), (xb, yb) = next(a.train_data_generator), next(b.train_data_generator)
-        assert (xa == xb).all() and (ya == yb).all()
-    for (xa, ya), (xb, yb) in zip(a.val_dataset, b.val_dataset):
-        assert (xa.numpy() == xb.numpy()).all() and (ya.numpy() == yb.numpy()).all()
+        ((pa, ca), ya), ((pb, cb), yb) = next(a.train_data_generator), next(b.train_data_generator)
+        assert (pa == pb).all() and (ca == cb).all() and (ya == yb).all()
+    for ((pa, ca), ya), ((pb, cb), yb) in zip(a.val_dataset, b.val_dataset):
+        assert (pa.numpy() == pb.numpy()).all() and (ca.numpy() == cb.numpy()).all()
+        assert (ya.numpy() == yb.numpy()).all()
 
 
 # --- other argument guards -------------------------------------------------------------

@@ -8,6 +8,13 @@ Symmetry choices are a pure function of (seed, position in the stream): the stre
 split into fixed-size blocks and each block's choices come from its own seeded
 generator. So a run resumed at stream position P sees exactly the batches, symmetries
 included, that an uninterrupted run would have seen from P.
+
+Positions are stored bit-packed (every feature plane is 0/1): PACKED_STATES holds each
+position's (size, size, features) planes flattened in C order and np.packbits'ed, with the
+planes' shape in its PLANES_SHAPE attribute. Batches stay packed all the way to the GPU -
+((packed, symmetry choices), labels) - and decode_on_device unpacks them there, applying
+each position's symmetry: 2.2 MB per 1024-position batch crosses to the GPU instead of
+71 MB of float32. encode() is the CPU reference the decoding is tested against.
 """
 import glob
 import os
@@ -31,6 +38,9 @@ BATCH_TRANSFORMATIONS = {
 
 SYMMETRY_BLOCK = 4096
 
+PACKED_STATES = "packed_states"
+PLANES_SHAPE = "shape"
+
 # Shard handles kept open at once. Two is enough for a forward stream: the shard being read
 # and the next one, which a batch spanning a boundary also touches. Python 3.7+ dicts keep
 # insertion order, so the oldest is the one evicted.
@@ -44,6 +54,17 @@ def find_split_shards(root, split):
     return shards
 
 
+def pack(states):
+    """(N, size, size, features) 0/1 planes -> (N, bytes) as stored in PACKED_STATES."""
+    return np.packbits(np.asarray(states, np.uint8).reshape(len(states), -1), axis=1)
+
+
+def unpack(packed, shape):
+    """PACKED_STATES rows -> (N,) + shape uint8 planes, on the CPU."""
+    return np.unpackbits(packed, axis=1, count=int(np.prod(shape))).reshape(
+        (len(packed),) + tuple(shape))
+
+
 def dataset_info(shards):
     """(feature_list, board_size, n_features, positions per shard). Every shard must
     agree on features and tensor shape."""
@@ -51,9 +72,15 @@ def dataset_info(shards):
     sizes = []
     for path in shards:
         with h5.File(path, "r") as f:
+            if PACKED_STATES not in f:
+                raise ValueError(
+                    "{} has no {} - a shard from before positions were stored bit-packed. "
+                    "Convert its directory with: python -m AlphaGo.preprocessing."
+                    "repack_shards <shards directory>".format(path, PACKED_STATES))
             feats = f["features"][()]
             feats = (feats.decode("ascii") if isinstance(feats, bytes) else feats).split(",")
-            n, board, board2, planes = f["states"].shape
+            n = len(f[PACKED_STATES])
+            board, board2, planes = (int(d) for d in f[PACKED_STATES].attrs[PLANES_SHAPE])
             if len(f["actions"]) != n:
                 raise ValueError("{}: {} states but {} actions".format(path, n, len(f["actions"])))
         if features is None:
@@ -66,7 +93,8 @@ def dataset_info(shards):
 
 
 class _Reader(object):
-    """Contiguous reads from a list of shards treated as one endless, wrapping array."""
+    """Contiguous reads from a list of shards treated as one endless, wrapping array.
+    read() returns (packed states, actions)."""
 
     def __init__(self, shards, sizes):
         self.shards = shards
@@ -95,7 +123,7 @@ class _Reader(object):
             offset = p - int(self.starts[i])
             take = min(n, int(self.starts[i + 1]) - p)
             f = self._file(i)
-            states.append(f["states"][offset:offset + take])
+            states.append(f[PACKED_STATES][offset:offset + take])
             actions.append(f["actions"][offset:offset + take])
             position += take
             n -= take
@@ -118,20 +146,50 @@ def _symmetry_choices(seed, position, n, n_transforms):
 
 
 def encode(states, actions, choices, transform_names, board_size):
-    """Float32 (X, Y) with symmetry transform_names[choices[i]] applied to position i."""
-    n = len(states)
+    """Float32 (X, Y) with symmetry transform_names[choices[i]] applied to position i -
+    unpacked states in, the reference for what decode_on_device builds on the GPU."""
+    X = np.empty(states.shape, dtype=np.float32)
+    for t, name in enumerate(transform_names):
+        idx = np.flatnonzero(choices == t)
+        if len(idx):
+            X[idx] = BATCH_TRANSFORMATIONS[name](states[idx])
+    return X, encode_labels(actions, choices, transform_names, board_size)
+
+
+def encode_labels(actions, choices, transform_names, board_size):
+    """Float32 one-hot move labels, (N, size * size), each under its position's symmetry."""
+    n = len(actions)
     labels = np.zeros((n, board_size, board_size), dtype=np.float32)
     labels[np.arange(n), actions[:, 0], actions[:, 1]] = 1.0
-    X = np.empty(states.shape, dtype=np.float32)
     Y = np.empty((n, board_size * board_size), dtype=np.float32)
     for t, name in enumerate(transform_names):
         idx = np.flatnonzero(choices == t)
-        if len(idx) == 0:
-            continue
-        fn = BATCH_TRANSFORMATIONS[name]
-        X[idx] = fn(states[idx])
-        Y[idx] = fn(labels[idx]).reshape(len(idx), -1)
-    return X, Y
+        if len(idx):
+            Y[idx] = BATCH_TRANSFORMATIONS[name](labels[idx]).reshape(len(idx), -1)
+    return Y
+
+
+def symmetry_permutations(board_size, transform_names):
+    """(transforms, size * size) int32: each symmetry as a permutation of the board's points
+    (row-major) - transformed[:, j] = original[:, perm[j]]."""
+    index_board = np.arange(board_size * board_size).reshape(1, board_size, board_size)
+    return np.stack([BATCH_TRANSFORMATIONS[name](index_board).reshape(-1)
+                     for name in transform_names]).astype(np.int32)
+
+
+def decode_on_device(packed, choices, board_size, n_features, transform_names, dtype):
+    """TensorFlow: packed (N, bytes) uint8 and symmetry choices (N,) -> (N, size, size,
+    features) planes of dtype, each under its symmetry. Runs wherever the calling graph
+    does - inside the training step, on the GPU. Equal to encode()'s X."""
+    import tensorflow as tf  # here, not at import: convert_shuffled's workers use this module
+    n_points = board_size * board_size
+    shifts = tf.constant([7, 6, 5, 4, 3, 2, 1, 0], tf.uint8)
+    bits = tf.bitwise.bitwise_and(tf.bitwise.right_shift(packed[:, :, None], shifts), 1)
+    bits = tf.reshape(bits, (-1, ((n_points * n_features + 7) // 8) * 8))
+    x = tf.reshape(bits[:, :n_points * n_features], (-1, n_points, n_features))
+    perms = tf.constant(symmetry_permutations(board_size, transform_names))
+    x = tf.gather(x, tf.gather(perms, choices), batch_dims=1)
+    return tf.cast(tf.reshape(x, (-1, board_size, board_size, n_features)), dtype)
 
 
 def _resolve_seed(seed):
@@ -140,28 +198,32 @@ def _resolve_seed(seed):
 
 def shard_batch_generator(shards, sizes, batch_size, board_size, transform_names, seed=None,
                           start_position=0):
-    """Endless (X, Y) batches, reading the shards in order from start_position."""
+    """Endless ((packed, choices), Y) batches, reading the shards in order from
+    start_position - for decode_on_device to unpack."""
     seed = _resolve_seed(seed)
     reader = _Reader(shards, sizes)
     position = int(start_position)
     try:
         while True:
-            states, actions = reader.read(position, batch_size)
+            packed, actions = reader.read(position, batch_size)
             choices = _symmetry_choices(seed, position, batch_size, len(transform_names))
-            yield encode(states, actions, choices, transform_names, board_size)
+            yield ((packed, choices.astype(np.int32)),
+                   encode_labels(actions, choices, transform_names, board_size))
             position += batch_size
     finally:
         reader.close()
 
 
 def validation_arrays(shards, sizes, n, board_size, transform_names, seed=None):
-    """The first n positions of the validation shards, fully materialised. They are a
-    uniform sample already, and taking a prefix keeps the set identical every epoch."""
+    """The first n positions of the validation shards as ((packed, choices), Y), like the
+    training batches. They are a uniform sample already, and taking a prefix keeps the set
+    identical every epoch."""
     reader = _Reader(shards, sizes)
     try:
         n = min(n, reader.total)
-        states, actions = reader.read(0, n)
+        packed, actions = reader.read(0, n)
     finally:
         reader.close()
     choices = _symmetry_choices(_resolve_seed(seed), 0, n, len(transform_names))
-    return encode(states, actions, choices, transform_names, board_size)
+    return ((packed, choices.astype(np.int32)),
+            encode_labels(actions, choices, transform_names, board_size))

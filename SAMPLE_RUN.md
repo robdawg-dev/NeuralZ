@@ -14,7 +14,7 @@ a desktop GUI, or a bot account on KGS.
 | Step | Time on the reference machine | Disk |
 |---|---|---|
 | Download and extract the SGFs | depends on your connection | ~20 GB (~9 GB after cleanup) |
-| Build the training data | ~3 hours | ~100 GB |
+| Build the training data | ~3 hours | ~12 GB (~30 GB while it runs) |
 | Train, 95 epochs | **~39 hours** | ~12 GB of checkpoints |
 
 The reference machine is a single **NVIDIA RTX 4070 SUPER (12 GB)**. Everything runs in
@@ -47,8 +47,7 @@ Docker, on Linux or on Windows with Docker Desktop.
     [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
   - **Windows:** [Docker Desktop](https://docs.docker.com/desktop/) with the WSL 2 backend,
     which passes the GPU through by itself.
-- **About 130 GB of free disk** and **16 GB of RAM or more**. The validation set alone is
-  held in memory: ~4 GB for this recipe's 60,000 positions.
+- **About 60 GB of free disk** and **16 GB of RAM or more**.
 - **git.**
 
 You don't need Python on your machine: the Docker image brings its own. Optionally,
@@ -242,7 +241,9 @@ Reference result, recorded in `workspace/prod_40m/shards/conversion.json`:
 (The reference run's shards held 100,000 positions each; how the data is split into shard
 files makes no difference to training.)
 
-That's about 100 GB. The train split took about 2 hours, most of it the first pass.
+That's about 12 GB: positions are stored bit-packed and compressed, about 300 bytes
+each. While it runs, the first pass's temporary files need up to ~16 GB more for the
+train split. The train split took about 2 hours, most of it the first pass.
 
 ---
 
@@ -443,6 +444,11 @@ using the GPU: TensorFlow reserves most of the card's memory when it starts.
 **`Model JSON file expects features ... But shards contain ...`** The model and the shards
 were built with different feature lists. Recreate the model with
 `--features-from workspace/prod_40m/shards`.
+
+**`... has no packed_states - a shard from before positions were stored bit-packed`.**
+Shards built by an older version of this repo. Convert them in place, keeping their
+position order:
+`docker compose run --rm gpu python -m AlphaGo.preprocessing.repack_shards <shards directory>`.
 
 **Paths like `/data` turn into `C:/Program Files/Git/data` (Git Bash).** Prefix the
 command with `MSYS_NO_PATHCONV=1`.

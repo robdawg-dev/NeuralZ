@@ -23,10 +23,13 @@ bucket keeps peak memory at one bucket however large the shards are. The order i
 unchanged either way - file boundaries fall in different places, but the position sequence
 is the same, so a shard set is uniform regardless of how it is packaged.
 
-Buckets are raw files of fixed-size records rather than HDF5. Every feature plane is 0/1,
-so workers bit-pack each position (17,328 bytes -> 2,166 at 48 planes) and the main
-process only appends bytes. Compressing into HDF5 there was the pass-1 bottleneck: HDF5
-calls cannot run in parallel from Python, so every position went through one thread.
+Buckets are files of fixed-size records rather than HDF5. Every feature plane is 0/1,
+so workers bit-pack each position (17,328 bytes -> 2,166 at 48 planes), and the main
+process buffers each bucket's records and appends them as zlib level-1 blocks
+(_BucketWriter) - ~5x smaller, so a split's buckets take ~440 bytes per position on disk
+rather than ~2.2 KB, for under a tenth of one core. (Writing buckets as compressed HDF5
+was once the pass-1 bottleneck: HDF5 calls cannot run in parallel from Python, and their
+per-call overhead is far higher than zlib's on large blocks.)
 
 Random bucket assignment + a uniform shuffle inside each bucket + concatenation gives a
 uniformly random order: given the bucket sizes, every assignment and every within-bucket
@@ -41,10 +44,13 @@ does on its own:
     more than X winrate. The replay continues, so the position after a blunder is kept
     with the move that punishes it. The share dropped is reported.
 
-Each shard holds: states (N,19,19,F) uint8, actions (N,2) uint8, game_id (N,) int32,
-move (N,) int16, plus `features` and `conversion_args`. game_id indexes
-<split>/games.tsv, and move is the move number in that game, so any position traces back
-to its SGF.
+Each shard holds: packed_states (N, ceil(19*19*F/8)) uint8 - the positions still
+bit-packed, as shard_stream reads them (see there), with their (19,19,F) shape as an
+attribute - actions (N,2) uint8, game_id (N,) int32, move (N,) int16, plus `features`
+and `conversion_args`. Compressed with gzip level 6: packed positions compress ~7x more,
+and read back as fast as at level 1 (only writing is slower, in pass 2's workers).
+game_id indexes <split>/games.tsv, and move is the move number in that game, so any
+position traces back to its SGF.
 """
 import argparse
 import collections
@@ -54,8 +60,10 @@ import json
 import math
 import os
 import re
+import struct
 import sys
 import time
+import zlib
 
 import h5py as h5
 import numpy as np
@@ -63,6 +71,7 @@ import sgf
 
 import AlphaGo.go as go
 from AlphaGo.preprocessing.preprocessing import Preprocess
+from AlphaGo.training.shard_stream import PACKED_STATES, PLANES_SHAPE
 from AlphaGo.util import sgf_iter_states
 
 ALL_FEATURES = [
@@ -71,6 +80,8 @@ ALL_FEATURES = [
 SPLITS = ("train", "val", "test")
 POSITIONS_PER_MOVE = 0.97
 CHUNK_ROWS = 64
+SHARD_GZIP_LEVEL = 6
+BUCKET_BLOCK_BYTES = 256 * 1024
 
 # A move node with its KataGo annotation, if any. win/loss are from White's perspective.
 _RE_MOVE = re.compile(
@@ -203,7 +214,46 @@ def convert_game(job):
 def _create(h5f, name, shape, dtype, rows=0):
     return h5f.create_dataset(
         name, shape=(rows,) + shape, maxshape=(None,) + shape, dtype=dtype,
-        chunks=(CHUNK_ROWS,) + shape, compression="lzf")
+        chunks=(CHUNK_ROWS,) + shape, compression="gzip", compression_opts=SHARD_GZIP_LEVEL)
+
+
+class _BucketWriter(object):
+    """Appends bytes to a bucket file as zlib level-1 blocks of about BUCKET_BLOCK_BYTES,
+    each prefixed with its compressed length (little-endian uint32). Records reach a
+    bucket one or two at a time, so they're buffered into blocks worth compressing."""
+
+    def __init__(self, path):
+        self._file = open(path, "wb")
+        self._parts, self._size = [], 0
+
+    def write(self, data):
+        self._parts.append(data)
+        self._size += len(data)
+        if self._size >= BUCKET_BLOCK_BYTES:
+            self._flush()
+
+    def _flush(self):
+        if self._parts:
+            block = zlib.compress(b"".join(self._parts), 1)
+            self._file.write(struct.pack("<I", len(block)))
+            self._file.write(block)
+            self._parts, self._size = [], 0
+
+    def close(self):
+        self._flush()
+        self._file.close()
+
+
+def _read_bucket(path, dtype):
+    """A bucket file's records, as a structured array (see _BucketWriter)."""
+    with open(path, "rb") as f:
+        data = f.read()
+    blocks, at = [], 0
+    while at < len(data):
+        (length,) = struct.unpack_from("<I", data, at)
+        blocks.append(zlib.decompress(data[at + 4:at + 4 + length]))
+        at += 4 + length
+    return np.frombuffer(b"".join(blocks), dtype=dtype)
 
 
 def _read_keeplist(path):
@@ -217,7 +267,7 @@ def _read_keeplist(path):
     return games
 
 
-def _write_shard(job, block=8192):
+def _write_shard(job):
     """Shuffle a group of buckets into one shard, in order, then delete them.
 
     Runs in a pass-2 worker. Only one bucket is held in memory at a time, so the shard may
@@ -227,28 +277,23 @@ def _write_shard(job, block=8192):
     (bucket_paths, seeds, shard_path, board_size, n_features, features,
      conversion_args) = job
     dtype = record_dtype(board_size, n_features)
-    shape = (board_size, board_size, n_features)
-    bits = board_size * board_size * n_features
     tmp = shard_path + ".partial"
     written = 0
     with h5.File(tmp, "w") as s:
-        states = _create(s, "states", shape, np.uint8)
+        states = _create(s, PACKED_STATES, dtype["state"].shape, np.uint8)
+        states.attrs[PLANES_SHAPE] = (board_size, board_size, n_features)
         actions = _create(s, "actions", (2,), np.uint8)
         game_id = _create(s, "game_id", (), np.int32)
         move = _create(s, "move", (), np.int16)
         for bucket_path, seed in zip(bucket_paths, seeds):
-            rec = np.fromfile(bucket_path, dtype=dtype)
+            rec = _read_bucket(bucket_path, dtype)
             n = len(rec)
             if n:
                 rec = rec[np.random.default_rng(seed).permutation(n)]
                 base = written
                 for ds in (states, actions, game_id, move):
                     ds.resize(base + n, axis=0)
-                for start in range(0, n, block):
-                    part = rec[start:start + block]
-                    at = base + start
-                    states[at:at + len(part)] = np.unpackbits(
-                        part["state"], axis=1, count=bits).reshape((len(part),) + shape)
+                states[base:base + n] = rec["state"]
                 actions[base:base + n] = rec["action"]
                 game_id[base:base + n] = rec["game_id"]
                 move[base:base + n] = rec["move"]
@@ -274,7 +319,7 @@ def convert_split(split, games, out_dir, args, features, conversion_args):
     rng = np.random.default_rng([args.seed, split_index])
     n_features = Preprocess(features, size=args.size).get_output_dimension()
     bucket_paths = [os.path.join(bucket_dir, "bucket_{:05d}.bin".format(i)) for i in range(k)]
-    handles = [open(p, "wb", buffering=1 << 20) for p in bucket_paths]
+    handles = [_BucketWriter(p) for p in bucket_paths]
 
     stats = collections.Counter()
     truncations = collections.Counter()
@@ -383,11 +428,12 @@ def main(argv=None):
     p.add_argument("--positions-per-bucket", type=int, default=100000,
                    help="Pass-2 memory knob: a whole bucket is held in memory to be "
                         "shuffled, bit-packed at ~2.2KB per position, so 100k is ~220MB "
-                        "(and ~2x that briefly while permuting).")
+                        "(and ~2x that briefly while permuting). Pass 1 also buffers up to "
+                        "256KB per bucket.")
     p.add_argument("--positions-per-file", type=int, default=1000000,
                    help="Shard size on disk, rounded to a whole number of buckets. Only "
                         "affects packaging: peak memory stays one bucket, and the position "
-                        "order is identical however the shards are cut. 1M is ~2.5GB.")
+                        "order is identical however the shards are cut. 1M is ~0.3GB.")
     p.add_argument("--pass2-workers", type=int, default=8,
                    help="Buckets shuffled into shards in parallel")
     p.add_argument("--workers", type=int, default=None)

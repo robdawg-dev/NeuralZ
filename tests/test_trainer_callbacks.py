@@ -276,11 +276,17 @@ def test_range_diagnostics_tolerates_missing_logs(tmp_path):
 # --- sanity_checked_generator ----------------------------------------------------------
 
 def _batch(bad=False):
-    X = np.zeros((4, 19, 19, 2), np.float32)
+    packed = np.zeros((4, 91), np.uint8)
+    choices = np.zeros(4, np.int32)
     Y = np.zeros((4, 361), np.float32)
     if not bad:
         Y[np.arange(4), [0, 5, 10, 360]] = 1
-    return X, Y
+    return (packed, choices), Y
+
+
+def _sanity(batches, tmp_path, label="train", **kwargs):
+    return list(trainer.sanity_checked_generator(iter(batches), str(tmp_path), label, 8,
+                                                 **kwargs))
 
 
 def _logged_steps(tmp_path):
@@ -292,39 +298,39 @@ def _logged_steps(tmp_path):
 
 def test_sanity_generator_passes_batches_through_unchanged(tmp_path):
     batches = [_batch() for _ in range(3)]
-    out = list(trainer.sanity_checked_generator(iter(batches), str(tmp_path), "train"))
+    out = _sanity(batches, tmp_path)
     assert len(out) == 3
-    for (X, Y), (X2, Y2) in zip(batches, out):
-        assert X is X2 and Y is Y2
+    for ((packed, choices), Y), ((packed2, choices2), Y2) in zip(batches, out):
+        assert packed is packed2 and choices is choices2 and Y is Y2
     assert _logged_steps(tmp_path) == []
 
 
 def test_sanity_generator_checks_first_five_then_every_nth(tmp_path):
     batches = [_batch(bad=True) for _ in range(12)]
-    list(trainer.sanity_checked_generator(iter(batches), str(tmp_path), "train",
-                                          check_every=5))
+    _sanity(batches, tmp_path, check_every=5)
     assert _logged_steps(tmp_path) == [1, 2, 3, 4, 5, 10]
 
 
-@pytest.mark.parametrize("corrupt", ["nan", "above_one", "negative", "two_hot"])
+@pytest.mark.parametrize("corrupt", ["two_hot", "no_label", "choice_too_big",
+                                     "negative_choice"])
 def test_sanity_generator_detects_each_kind_of_bad_batch(tmp_path, corrupt):
-    X, Y = _batch()
-    if corrupt == "nan":
-        X[0, 0, 0, 0] = np.nan
-    elif corrupt == "above_one":
-        X[0, 0, 0, 0] = 2.0
-    elif corrupt == "negative":
-        X[0, 0, 0, 0] = -1.0
-    else:
+    (packed, choices), Y = _batch()
+    if corrupt == "two_hot":
         Y[0, 1] = 1
-    list(trainer.sanity_checked_generator(iter([(X, Y)]), str(tmp_path), "val"))
+    elif corrupt == "no_label":
+        Y[0] = 0
+    elif corrupt == "choice_too_big":
+        choices[0] = 8
+    else:
+        choices[0] = -1
+    _sanity([((packed, choices), Y)], tmp_path, label="val")
     entries = json.loads((tmp_path / "batch_sanity_log.json").read_text())
     assert [(e["label"], e["step"]) for e in entries] == [("val", 1)]
 
 
 def test_sanity_generator_appends_to_existing_log(tmp_path):
     (tmp_path / "batch_sanity_log.json").write_text(json.dumps([{"label": "old", "step": 99}]))
-    list(trainer.sanity_checked_generator(iter([_batch(bad=True)]), str(tmp_path), "train"))
+    _sanity([_batch(bad=True)], tmp_path)
     assert _logged_steps(tmp_path) == [99, 1]
 
 
