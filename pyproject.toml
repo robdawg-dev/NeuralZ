@@ -32,6 +32,7 @@ gtp = [
 
 [dependency-groups]
 dev = [
+    "coverage>=7.16.2",
     "cython-lint>=0.21.1",
     "flake8>=7.4.1",
     "pytest>=9.1.1",
@@ -41,6 +42,22 @@ dev = [
 markers = [
     "slow: end-to-end run_training() tests (XLA compile on CPU); deselect with -m 'not slow'",
 ]
+
+# Test coverage:
+#   coverage run -m pytest tests && coverage combine && coverage report
+# Counts worker processes (convert_shuffled, sgf_preparation's parallel scan) and the
+# programs tests launch as processes (go_server.py, go_client.py, run_gtp_player.py) -
+# otherwise their code shows as untested. The Cython engine (*.pyx) isn't measured.
+[tool.coverage.run]
+source = ["AlphaGo", "interface", "go_server", "go_client", "run_gtp_player"]
+omit = ["deprecated/*"]
+concurrency = ["multiprocessing", "thread"]
+parallel = true
+patch = ["subprocess"]
+sigterm = true
+
+[tool.coverage.report]
+sort = "Cover"
 
 [tool.cython-lint]
 max-line-length = 100

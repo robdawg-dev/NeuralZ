@@ -40,13 +40,19 @@ POSITIONS_PER_MOVE = 0.97
 
 
 def _pools(manifest, komi_min, komi_max, wr_min, wr_max):
-    normal, handicap = [], []
+    """(normal pool, handicap pool, damaged lines). A line that isn't valid JSON - e.g.
+    a row cut off when a scan was killed mid-write - is counted and skipped."""
+    normal, handicap, damaged = [], [], 0
     with io.open(manifest, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            d = json.loads(line)
+            try:
+                d = json.loads(line)
+            except ValueError:
+                damaged += 1
+                continue
             try:
                 komi = float(d["komi"])
                 wr = float(d["first_searched_winrate"])
@@ -60,7 +66,7 @@ def _pools(manifest, komi_min, komi_max, wr_min, wr_max):
                 normal.append((path, moves, "normal"))
             elif d.get("gtype") == "handicap":
                 handicap.append((path, moves, "handicap"))
-    return normal, handicap
+    return normal, handicap, damaged
 
 
 def _take(pool, target_positions, rng):
@@ -93,8 +99,11 @@ def select(args):
                 name, args.out_dir))
 
     rng = random.Random(args.seed)
-    normal_pool, handicap_pool = _pools(
+    normal_pool, handicap_pool, damaged = _pools(
         args.manifest, args.komi_min, args.komi_max, args.wr_min, args.wr_max)
+    if damaged:
+        print("WARNING: skipped {:,} damaged manifest line(s) - not valid JSON".format(
+            damaged), file=sys.stderr)
     normal, normal_pos = _take(normal_pool, args.normal_positions, rng)
     handicap, handicap_pos = _take(handicap_pool, args.handicap_positions, rng)
     if normal_pos < args.normal_positions or handicap_pos < args.handicap_positions:
@@ -114,6 +123,7 @@ def select(args):
             args.wr_min, args.wr_max),
         "pool sizes        : {:,} normal, {:,} handicap games".format(
             len(normal_pool), len(handicap_pool)),
+        "damaged lines     : {:,} skipped (not valid JSON)".format(damaged),
         "chosen            : {:,} normal (~{:,.0f} positions), {:,} handicap (~{:,.0f})".format(
             len(normal), normal_pos, len(handicap), handicap_pos),
         "handicap share    : {:.2%} of estimated positions".format(

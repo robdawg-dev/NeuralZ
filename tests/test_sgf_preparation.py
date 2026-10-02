@@ -193,3 +193,119 @@ def test_no_move_stats_skips_only_the_per_move_aggregates(tmp_path):
     a, b = _rows(full)[0], _rows(fast)[0]
     assert a["n_moves"] == b["n_moves"] == 4          # header facts still present
     assert "n_blunder_gt10" in a and "n_blunder_gt10" not in b
+
+
+# ---------------------------------------------------------------------------
+# the parallel scan, and failures that must not cost other files their rows
+# ---------------------------------------------------------------------------
+
+def _variants(n):
+    """n distinct annotated games: each changes the opening move's winrate, so rows differ
+    and a mix-up between files would show."""
+    return {"g{:02d}.sgf".format(i): ANNOTATED.replace(
+        "B[aa]C[0.50", "B[aa]C[0.{:02d}".format(30 + i)) for i in range(n)}
+
+
+def test_parallel_scan_gives_every_file_the_same_row_as_a_sequential_one(tmp_path):
+    """--workers defaults to one per CPU, a separate code path from --workers 1: a
+    process pool fed through _bounded_map. Rows may come back in a different order."""
+    src = _corpus(tmp_path, **_variants(11))
+    serial, parallel = str(tmp_path / "s.jsonl"), str(tmp_path / "p.jsonl")
+    prep.main(["scan", src, serial, "--quiet", "--workers", "1"])
+    prep.main(["scan", src, parallel, "--quiet", "--workers", "2", "--chunk-size", "2"])
+    by_path = [{r["path"]: r for r in _rows(m)} for m in (serial, parallel)]
+    assert len(by_path[0]) == 11 and len(_rows(parallel)) == 11
+    assert by_path[0] == by_path[1]
+
+
+def test_bounded_map_returns_everything_with_limited_work_in_flight():
+    import concurrent.futures
+    import threading
+    import time
+
+    taken = []
+    running, peak = [0], [0]
+    lock = threading.Lock()
+
+    def work():
+        for i in range(20):
+            taken.append(i)
+            yield i
+
+    def fn(x):
+        with lock:
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+        time.sleep(0.01)
+        with lock:
+            running[0] -= 1
+        return x * 10
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        results = prep._bounded_map(pool, fn, work(), max_in_flight=3)
+        first = next(results)
+        # Lazy: only the first window (plus the one refill after the first result) has
+        # been read from the work generator so far.
+        assert len(taken) <= 4
+        rest = list(results)
+    assert sorted([first] + rest) == [x * 10 for x in range(20)]
+    assert peak[0] <= 3
+
+
+def test_an_unreadable_file_gets_a_row_not_an_exception(tmp_path):
+    missing = str(tmp_path / "gone.sgf")
+    for with_move_stats in (True, False):
+        row = prep.scan_one(missing, with_move_stats=with_move_stats)
+        assert row["path"] == missing and row["sgf_ok"] is False
+        assert row["reasons"][0].startswith("unreadable:")
+        assert ("n_blunder_gt10" in row) == with_move_stats
+
+
+def test_a_scan_error_costs_only_that_files_row(tmp_path, monkeypatch):
+    src = _corpus(tmp_path, **{"ok.sgf": ANNOTATED, "boom.sgf": ANNOTATED})
+    real = prep.scan_one
+
+    def flaky(path, *args, **kwargs):
+        if path.endswith("boom.sgf"):
+            raise RuntimeError("simulated")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(prep, "scan_one", flaky)
+    rows = {os.path.basename(r["path"]): r for r in prep._scan_chunk(
+        ([os.path.join(src, "ok.sgf"), os.path.join(src, "boom.sgf")], True, 19))}
+    assert rows["boom.sgf"]["sgf_ok"] is False
+    assert rows["boom.sgf"]["reasons"] == ["scan_error:RuntimeError"]
+    assert rows["ok.sgf"]["sgf_ok"] is True and rows["ok.sgf"]["n_blunder_gt10"] == 1
+
+
+def test_resume_without_a_manifest_is_a_fresh_scan(tmp_path):
+    src = _corpus(tmp_path, **_variants(3))
+    manifest = str(tmp_path / "new.jsonl")
+    prep.main(["scan", src, manifest, "--quiet", "--workers", "1", "--resume"])
+    assert len(_rows(manifest)) == 3
+
+
+def test_resume_survives_a_damaged_manifest(tmp_path):
+    """After a crash mid-write - the moment --resume exists for - the manifest can end in
+    a partial line. Damaged lines are skipped; only files with an intact row are not
+    re-scanned."""
+    src = _corpus(tmp_path, **_variants(4))
+    manifest = str(tmp_path / "m.jsonl")
+    prep.main(["scan", src, manifest, "--quiet", "--workers", "1", "--sample", "2"])
+    done = _rows(manifest)
+    with open(manifest, "a") as f:
+        f.write("\n")                          # blank line
+        f.write('{"no_path_here": 1}\n')        # a row without a path
+        f.write('{"path": "/some/where.sgf", "trunc')   # a line cut off mid-write
+    prep.main(["scan", src, manifest, "--quiet", "--workers", "1", "--resume"])
+    with open(manifest) as f:
+        rows = []
+        for line in f:
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue
+    paths = [r["path"] for r in rows if "path" in r]
+    assert sorted(set(paths)) == sorted(paths), "resume re-scanned a file"
+    assert {r["path"] for r in done} <= set(paths)
+    assert len([p for p in paths if p.endswith(".sgf") and "where" not in p]) == 4

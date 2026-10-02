@@ -14,12 +14,10 @@ MODEL_SPECS = {
     "simplecnn": {
         "json": "model.json",
         "weights": "weights.00007.weights.h5",
-        "legacy": False,
     },
     "resnet": {
         "json": "model_restower.json",
         "weights": "weights.00007.weights.h5",
-        "legacy": False,
     },
     "resnet2h": {
         # From the ~2hr/28-epoch bridge trial (benchmarks/_bridge_trial_seed5001,
@@ -27,7 +25,6 @@ MODEL_SPECS = {
         # same architecture as "resnet" but ~4x the training (28 epochs vs 7).
         "json": "model_restower.json",
         "weights": "weights.00028.weights.h5",
-        "legacy": False,
     },
     "resnet2hkgs": {
         # Same architecture and recipe as "resnet2h" (28 epochs, same hyperparameters),
@@ -35,7 +32,6 @@ MODEL_SPECS = {
         # from benchmarks/_kgs_resnet_seed6001, seed=6001.
         "json": "model_restower.json",
         "weights": "weights.00028.weights.h5",
-        "legacy": False,
     },
     "simplecnn2h": {
         # Same architecture as "simplecnn" but scaled from 7 to 28 epochs (~2hrs,
@@ -43,7 +39,6 @@ MODEL_SPECS = {
         # benchmarks/_simplecnn_2h_seed7001, seed=7001.
         "json": "model.json",
         "weights": "weights.00028.weights.h5",
-        "legacy": False,
     },
     "b10c128": {
         # ResTowerPolicy, 10 blocks x 128 filters, with the normalized/widened
@@ -58,7 +53,6 @@ MODEL_SPECS = {
         # (best epoch 200: 1.8147), 11 LR cuts from peak 0.01 down to ~4.9e-6.
         "json": "model_restower_b10c128_convnorm.json",
         "weights": "weights.00207.weights.h5",
-        "legacy": False,
     },
     "b10c128new": {
         # ResTowerPolicy, 10 blocks x 128 filters, same conv_norm head as "b10c128" -
@@ -72,7 +66,6 @@ MODEL_SPECS = {
         # Final val_loss=1.8470, val_accuracy=0.4959, LR=0.025 (mid-schedule, not annealed).
         "json": "model_restower_b10c128_convnorm.json",
         "weights": "weights.00046.weights.h5",
-        "legacy": False,
     },
     "b10c128mb1024": {
         # ResTowerPolicy, 10 blocks x 128 filters, same conv_norm head as "b10c128"/
@@ -89,7 +82,6 @@ MODEL_SPECS = {
         # Final/best (epoch 125): val_loss=1.6691, val_accuracy=0.5182.
         "json": "model_restower_b10c128_convnorm.json",
         "weights": "weights.00125.weights.h5",
-        "legacy": False,
     },
     "b15c192": {
         # ResTowerPolicy, 15 blocks x 192 filters (this project's original/default
@@ -114,13 +106,11 @@ MODEL_SPECS = {
         # val_accuracy=0.5382, val_top5_accuracy=0.8633.
         "json": "model_restower_b15c192_convnorm.json",
         "weights": "weights.00074.weights.h5",
-        "legacy": False,
     },
     "b15c192latest": {
             # Latest and greatest
             "json": "model_restower_b15c192_convnorm.json",
             "weights": "weights.00094.weights.h5",
-            "legacy": False,
     },
     "b20c256": {
         # NewResPolicy (pre-activation residual tower with global pooling), 20 blocks x
@@ -131,14 +121,12 @@ MODEL_SPECS = {
         # val_loss=1.3906, val_accuracy=0.5732, val_top5_accuracy=0.8921.
         "json": "model_newres_b20c256_g5.json",
         "weights": "weights.00067.weights.h5",
-        "legacy": False,
     },
     "2016net": {
         # Converted from the original legacy Keras 2.0.4 format by
         # convert_2016net.py - the untouched originals live in Data/Mamifreak/.
         "json": "model.json",
         "weights": "model.weights.h5",
-        "legacy": False,
     },
 }
 
@@ -148,8 +136,6 @@ def load_policy(name):
     model_dir = os.path.join(MODELS_DIR, name)
     json_path = os.path.join(model_dir, spec["json"])
     weights_path = os.path.join(model_dir, spec["weights"])
-    if spec["legacy"]:
-        return NeuralNetBase.load_legacy_keras2_model(json_path, weights_file=weights_path)
     policy = NeuralNetBase.load_model(json_path)
     policy.model.load_weights(weights_path)
     return policy

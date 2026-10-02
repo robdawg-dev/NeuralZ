@@ -34,9 +34,28 @@ def test_pools_apply_the_agreed_criteria(tmp_path):
         _row("uncomp_hcap", gtype="handicap", komi=7.0, wr=0.0),
         _row("sgfpos", gtype="sgfpos"),
     ])
-    normal, handicap = select_games._pools(m, 5, 9, 0.3, 0.7)
+    normal, handicap, damaged = select_games._pools(m, 5, 9, 0.3, 0.7)
     assert [p[0] for p in normal] == ["game_data/d/keep_normal.sgf"]
     assert [p[0] for p in handicap] == ["game_data/d/keep_hcap.sgf"]
+    assert damaged == 0
+
+
+def test_damaged_manifest_lines_are_skipped_and_reported(tmp_path, capsys):
+    """A scan killed mid-write leaves a cut-off row; selection skips it, says so, and
+    carries on with every intact row."""
+    m = _manifest(tmp_path, [_row("a"), _row("b")])
+    with open(m, "a") as f:
+        f.write('{"path": "game_data/d/cut.sgf", "gtype": "nor\n')
+        f.write("not json at all\n")
+    normal, _handicap, damaged = select_games._pools(m, 5, 9, 0.3, 0.7)
+    assert sorted(p[0] for p in normal) == ["game_data/d/a.sgf", "game_data/d/b.sgf"]
+    assert damaged == 2
+    out = str(tmp_path / "sel")
+    select_games.main([m, out, "--normal-positions", "1e9", "--handicap-positions", "0"])
+    captured = capsys.readouterr()
+    assert "skipped 2 damaged manifest line(s)" in captured.err
+    with open(os.path.join(out, "selection_summary.txt")) as f:
+        assert "damaged lines     : 2 skipped" in f.read()
 
 
 def test_split_is_by_game_stratified_and_reproducible(tmp_path):

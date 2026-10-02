@@ -215,33 +215,38 @@ def _open_in(path):
 
 
 def _already_scanned(manifest_path):
-    """Path hashes of rows already in the manifest, for --resume.
+    """Path hashes of rows already in the manifest, for --resume, and whether the
+    manifest ends mid-line - a scan killed while writing a row leaves it cut off.
 
     Hashes rather than paths deliberately: at several million files a set of full path
     strings runs to hundreds of MB, while 64-bit hashes cost ~8 bytes each. Collision
     risk at this scale is negligible (~4e-7 for 4M entries), and the cost of a collision
-    is one file silently not re-scanned.
+    is one file silently not re-scanned. A damaged row is skipped, so its file is
+    scanned again.
     """
     seen = set()
+    ends_mid_line = False
     if not os.path.exists(manifest_path):
-        return seen
+        return seen, ends_mid_line
     with _open_in(manifest_path) as f:
-        for line in f:
-            line = line.strip()
+        for raw in f:
+            ends_mid_line = not raw.endswith("\n")
+            line = raw.strip()
             if not line:
                 continue
             try:
                 seen.add(hash(json.loads(line)["path"]))
-            except (ValueError, KeyError):
+            except (ValueError, KeyError, TypeError):
                 continue
-    return seen
+    return seen, ends_mid_line
 
 
 def cmd_scan(args):
     import concurrent.futures
 
     workers = args.workers or os.cpu_count()
-    resume_skip = _already_scanned(args.manifest) if args.resume else set()
+    resume_skip, ends_mid_line = (_already_scanned(args.manifest) if args.resume
+                                  else (set(), False))
     if resume_skip:
         print("resuming: {:,} files already in {}".format(len(resume_skip), args.manifest),
               file=sys.stderr)
@@ -259,6 +264,9 @@ def cmd_scan(args):
     reasons = collections.Counter()
 
     out = _open_out(args.manifest, "a" if args.resume else "w")
+    if ends_mid_line:
+        # Finish the cut-off row's line, so the first new row isn't appended onto it.
+        out.write("\n")
     try:
         if workers == 1:
             results_iter = (_scan_chunk(w) for w in work)
