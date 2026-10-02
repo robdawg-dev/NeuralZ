@@ -5,6 +5,7 @@ exclude = .git,.venv,build,deprecated,__pycache__
 # deliberately come after code.
 per-file-ignores =
     run_gtp_player.py: E402
+    tests/test_go_server_client.py: E402
     tests/test_lr_override.py: E402
     tests/test_make_model.py: E402
     tests/test_new_res_policy.py: E402

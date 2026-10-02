@@ -1,0 +1,122 @@
+"""A GTP bot that gets its move probabilities from go_server.py instead of loading the
+network itself - so many bots can share one model, and each bot process stays small:
+it never imports TensorFlow or Keras.
+
+    python go_client.py [--server http://127.0.0.1:5005] [--temperature ...]
+
+Plays exactly as run_gtp_player.py does - same options, same GTP layer
+(interface.gtp_wrapper), same game state and move choice (AlphaGo.ai) - except that
+RemotePolicy stands in for the network: it builds the position's feature planes here and
+asks the server for the move probabilities.
+"""
+import argparse
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+
+import numpy as np
+
+from AlphaGo.ai import ProbabilisticPolicyPlayer
+from AlphaGo.preprocessing.preprocessing import Preprocess
+from AlphaGo.util import flatten_idx
+from interface.gtp_wrapper import run_gtp
+
+
+class RemotePolicy(object):
+    """The policy interface ProbabilisticPolicyPlayer uses (eval_state), answered by
+    go_server.py: the feature list comes from the server's /info, so the planes built here
+    always match the served model."""
+
+    def __init__(self, server, timeout=30.0, retries=3, retry_wait=1.0):
+        self.server = server.rstrip("/")
+        self.timeout = timeout
+        self.retries = retries
+        self.retry_wait = retry_wait
+        self.info = json.loads(self._request("/info"))
+        self.board_size = self.info["board_size"]
+        self.preprocessor = Preprocess(self.info["features"], size=self.board_size)
+        if self.preprocessor.get_output_dimension() != self.info["planes"]:
+            raise ValueError("server's model takes {} planes, but its feature list builds {}"
+                             .format(self.info["planes"],
+                                     self.preprocessor.get_output_dimension()))
+
+    def _request(self, path, body=None):
+        """GET (body None) or POST to the server, retrying connection failures a few times
+        - so a server restart doesn't cost a bot its game."""
+        for attempt in range(self.retries + 1):
+            try:
+                request = urllib.request.Request(
+                    self.server + path, data=body,
+                    headers={"Content-Type": "application/octet-stream"} if body else {})
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    return response.read()
+            except urllib.error.HTTPError as e:
+                raise RuntimeError("go_server {} -> {}: {}".format(
+                    path, e.code, e.read().decode("utf-8", "replace"))) from e
+            except (urllib.error.URLError, OSError) as e:
+                if attempt == self.retries:
+                    raise RuntimeError("go_server at {} unreachable: {}".format(
+                        self.server, e)) from e
+                time.sleep(self.retry_wait * (attempt + 1))
+
+    def move_probabilities(self, state):
+        """The served network's probabilities for every board point, (size * size,)."""
+        planes = self.preprocessor.state_to_tensor(state)
+        reply = self._request("/policy", np.packbits(planes.reshape(-1)).tobytes())
+        return np.frombuffer(reply, "<f4")
+
+    def eval_state(self, state, moves=None):
+        """(move, probability) for each of moves (default: all legal moves), normalized
+        over them - as CNNPolicy.eval_state does."""
+        probs = self.move_probabilities(state)
+        moves = moves or state.get_legal_moves()
+        if len(moves) == 0:
+            return []
+        distribution = probs[[flatten_idx(m, self.board_size) for m in moves]]
+        distribution = distribution / distribution.sum()
+        return list(zip(moves, distribution))
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Run a GTP bot whose network is served by go_server.py.")
+    parser.add_argument("--server", default="http://127.0.0.1:5005",
+                        help="go_server.py's address. Default: http://127.0.0.1:5005")
+    parser.add_argument("--timeout", type=float, default=30.0,
+                        help="Seconds to wait for one move's probabilities. Default: 30")
+    # The rest as in run_gtp_player.py - see there for the reasoning behind each default.
+    parser.add_argument("--temperature", type=float, default=1.0,
+                        help="Sampling temperature - lower is more greedy. Default: 1.0")
+    parser.add_argument("--greedy-start", type=int, default=2,
+                        help="Plies (both colors) played probabilistically before switching "
+                             "to greedy. Default: 2")
+    parser.add_argument("--top-k", type=int, default=12,
+                        help="Probabilistic picks restricted to the top K moves on an empty "
+                             "board. Default: 12")
+    parser.add_argument("--top-k-responding", type=int, default=3,
+                        help="As --top-k, when responding to stones already on the board. "
+                             "Default: 3")
+    parser.add_argument("--max-moves", type=int, default=800,
+                        help="Force a pass once this many moves have been played. Default: 800")
+    parser.add_argument("--version", default="0.3",
+                        help="Version string reported to the GTP controller. Default: 0.3")
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        policy = RemotePolicy(args.server, timeout=args.timeout)
+    except (RuntimeError, ValueError) as e:
+        sys.exit("go_client: {}".format(e))
+    player = ProbabilisticPolicyPlayer(
+        policy, temperature=args.temperature, pass_when_offered=True,
+        move_limit=args.max_moves, greedy_start=args.greedy_start,
+        top_k=args.top_k, top_k_responding=args.top_k_responding)
+    run_gtp(player, name="NeuralZ", version=args.version)
+
+
+if __name__ == "__main__":
+    main()
