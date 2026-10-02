@@ -122,6 +122,17 @@ MODEL_SPECS = {
             "weights": "weights.00094.weights.h5",
             "legacy": False,
     },
+    "b20c256": {
+        # NewResPolicy (pre-activation residual tower with global pooling), 20 blocks x
+        # 256 filters, policy head width 48 - trained on the 60M-position data
+        # (workspace/prod_60m/shards) at minibatch 512, LR 1.6 with a 2,000-step warmup,
+        # then 0.8/0.4/0.2/0.1/0.05 - see LR_STUDY_PLAN.md. From
+        # workspace/runs/newres_b20c256. This checkpoint (epoch 67, final):
+        # val_loss=1.3906, val_accuracy=0.5732, val_top5_accuracy=0.8921.
+        "json": "model_newres_b20c256_g5.json",
+        "weights": "weights.00067.weights.h5",
+        "legacy": False,
+    },
     "2016net": {
         # Converted from the original legacy Keras 2.0.4 format by
         # convert_2016net.py - the untouched originals live in Data/Mamifreak/.

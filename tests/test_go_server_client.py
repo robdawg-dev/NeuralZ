@@ -19,6 +19,7 @@ from AlphaGo import go
 from AlphaGo.ai import ProbabilisticPolicyPlayer
 from AlphaGo.go import GameState
 from AlphaGo.models.policy import CNNPolicy
+from AlphaGo.training.shard_stream import BATCH_TRANSFORMATIONS
 
 FEATURES = ["board", "ones", "liberties", "sensibleness"]
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -145,3 +146,96 @@ def test_client_never_loads_tensorflow():
     out = subprocess.run([sys.executable, "-c", script], cwd=REPO, capture_output=True,
                          text=True, check=True).stdout.strip()
     assert out == "[]"
+
+
+# --- symmetry averaging ----------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def symmetric_policy(model_files):
+    return go_server.BatchingPolicy(*model_files, symmetries=8)
+
+
+@pytest.fixture(scope="module")
+def rotation_policy(model_files):
+    return go_server.BatchingPolicy(*model_files, symmetries=4)
+
+
+def _planes(policy, state):
+    return policy.policy.preprocessor.state_to_tensor(state)[0]
+
+
+def test_one_symmetry_is_exactly_the_plain_network(server, model_files):
+    """--symmetries 1, the default, changes nothing."""
+    _url, policy = server
+    assert policy.symmetries == ["noop"] and policy.info["symmetries"] == 1
+    local = CNNPolicy.load_model(model_files[0])
+    local.model.load_weights(model_files[1])
+    for state in _positions()[:4]:
+        planes = _planes(policy, state)
+        np.testing.assert_array_equal(
+            policy._run([planes])[0],
+            local.forward(planes[None].astype(np.float32))[0].astype("<f4"))
+
+
+@pytest.mark.parametrize("which", ["eight", "four"])
+def test_symmetry_average_matches_a_by_hand_computation(symmetric_policy, rotation_policy,
+                                                        which):
+    """Each view evaluated on its own, mapped back to the original orientation by
+    inverting its board transform directly (not via the permutation table), and
+    averaged."""
+    policy = symmetric_policy if which == "eight" else rotation_policy
+    names = (list(BATCH_TRANSFORMATIONS) if which == "eight"
+             else ["noop", "rot90", "rot180", "rot270"])
+    assert policy.symmetries == names
+    inverse = {"noop": "noop", "rot90": "rot270", "rot180": "rot180", "rot270": "rot90",
+               "fliplr": "fliplr", "flipud": "flipud", "diag1": "diag1", "diag2": "diag2"}
+    for state in _positions()[3:6]:
+        planes = _planes(policy, state)
+        expected = np.zeros((19, 19))
+        for name in names:
+            view = BATCH_TRANSFORMATIONS[name](planes[None]).astype(np.float32)
+            probs = policy.policy.forward(view)[0].reshape(1, 19, 19)
+            expected += BATCH_TRANSFORMATIONS[inverse[name]](probs)[0]
+        np.testing.assert_allclose(policy._run([planes])[0],
+                                   (expected / len(names)).reshape(-1),
+                                   rtol=1e-5, atol=1e-7)
+
+
+@pytest.mark.parametrize("name", list(BATCH_TRANSFORMATIONS))
+def test_eight_symmetries_do_not_depend_on_board_orientation(symmetric_policy, name):
+    """A rotated or reflected position gets the same answer, rotated or reflected to
+    match."""
+    policy = symmetric_policy
+    planes = _planes(policy, _positions()[5])
+    fn = BATCH_TRANSFORMATIONS[name]
+    original = policy._run([planes])[0].reshape(1, 19, 19)
+    transformed = policy._run([fn(planes[None])[0]])[0].reshape(1, 19, 19)
+    np.testing.assert_allclose(transformed, fn(original), rtol=1e-5, atol=1e-7)
+
+
+@pytest.mark.parametrize("name", ["rot90", "rot180", "rot270"])
+def test_four_rotations_do_not_depend_on_rotating_the_board(rotation_policy, name):
+    policy = rotation_policy
+    planes = _planes(policy, _positions()[5])
+    fn = BATCH_TRANSFORMATIONS[name]
+    original = policy._run([planes])[0].reshape(1, 19, 19)
+    transformed = policy._run([fn(planes[None])[0]])[0].reshape(1, 19, 19)
+    np.testing.assert_allclose(transformed, fn(original), rtol=1e-5, atol=1e-7)
+
+
+def test_eight_symmetries_give_symmetric_points_equal_probabilities(symmetric_policy):
+    policy = symmetric_policy
+    probs = policy._run([_planes(policy, GameState())])[0].reshape(19, 19)
+    corners = [probs[3, 3], probs[3, 15], probs[15, 3], probs[15, 15]]
+    np.testing.assert_allclose(corners, corners[0], rtol=1e-5)
+    np.testing.assert_allclose(probs, probs.T, rtol=1e-5, atol=1e-8)
+
+
+def test_info_reports_the_symmetry_setting(symmetric_policy, rotation_policy):
+    assert symmetric_policy.info["symmetries"] == 8
+    assert rotation_policy.info["symmetries"] == 4
+
+
+def test_unsupported_symmetry_counts_are_rejected(model_files):
+    with pytest.raises(ValueError, match="symmetries"):
+        go_server.BatchingPolicy(*model_files, symmetries=3)
