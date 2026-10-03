@@ -50,6 +50,11 @@ class ProbabilisticPolicyPlayer(object):
        human's repeated opening line away by ply 30-40 in every game, and scored 49.75%
        (+/-2.5) against its own greedy self over 400 games.
 
+       Moves are never sampled while one of the player's own stones is in atari: there a
+       "close call" can be the first step of running a ladder the network rates nearly
+       as highly as giving the stone up (spring vs NeuralZ01, 2026-10-02: W hn at 22% vs
+       the greedy 25% started a failed ladder that lost the game).
+
        By manipulating the 'temperature', sampled moves can be pushed towards totally
        random (high temperature) or towards greedy play (low temperature)
     """
@@ -106,6 +111,12 @@ class ProbabilisticPolicyPlayer(object):
             n -= len(state.get_handicaps())
         return n
 
+    @staticmethod
+    def _has_stone_in_atari(state):
+        """Whether any stone of the player to move has exactly one liberty."""
+        own = state.get_board() == state.get_current_player()
+        return bool((own & (state.get_liberty() == 1)).any())
+
     def _in_sampling_window(self, state, own_moves):
         if self.sample_moves is None:
             return True
@@ -133,7 +144,7 @@ class ProbabilisticPolicyPlayer(object):
 
             move_probs = self.policy.eval_state(state, sensible_moves)
 
-            if self._in_sampling_window(state, own_moves):
+            if self._in_sampling_window(state, own_moves) and not self._has_stone_in_atari(state):
                 # probabilistic, among the close calls
                 return self._sample(self._close_candidates(move_probs))
 

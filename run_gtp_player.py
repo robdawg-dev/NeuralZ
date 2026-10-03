@@ -16,33 +16,20 @@ parser.add_argument("model", help="Path to a JSON model file (from CNNPolicy.sav
 parser.add_argument("weights", help="Path to a .weights.h5 weights file matching model")
 # Same defaults as play_tests/match_networks.py, so a GTP game plays like our playoffs.
 parser.add_argument("--temperature", type=float, default=1.0,
-                    help="Sampling temperature - lower is more greedy. Default: 1.0")
-parser.add_argument("--greedy-start", type=int, default=2,
-                    help="Play probabilistically (sampled by policy output, restricted to "
-                         "--top-k/--top-k-responding) for this many total plies of the game "
-                         "(both colors combined - see AlphaGo.ai.ProbabilisticPolicyPlayer), "
-                         "then switch to greedy (highest-probability move) for the rest. "
-                         "Default: 2 - one probabilistic move for whichever color moves "
-                         "first, one for whichever moves second, in an even (no-handicap) "
-                         "game. Handicap games place multiple stones before White's first "
-                         "move, which alone already exceeds this default, so they fall "
-                         "straight through to greedy from move 1 with no code change needed.")
-parser.add_argument("--top-k", type=int, default=12,
-                    help="Restrict probabilistic sampling to this many highest-probability "
-                         "legal moves when the board is empty (i.e. this player is moving "
-                         "first) - guarantees excluding any move outside the top K, unlike "
-                         "temperature alone which only makes a weak move less likely, never "
-                         "impossible. Default: 12, from surveying the network's own real "
-                         "empty-board move distribution - see benchmarks/"
-                         "_second_move_survey.py and the discussion that produced it.")
-parser.add_argument("--top-k-responding", type=int, default=3,
-                    help="Same as --top-k, but for when this player is responding to "
-                         "something already on the board (a normal opponent move, or "
-                         "handicap stones that didn't already push play past --greedy-start) "
-                         "- these positions are typically more concentrated than an empty "
-                         "board, so a narrower K is appropriate. Default: 3. Set to 1 for "
-                         "fully deterministic (greedy) responses while keeping --top-k "
-                         "probabilistic for this player's own first move.")
+                    help="Temperature for sampled moves - lower leans harder toward the "
+                         "top candidate. Default: 1.0")
+parser.add_argument("--sample-ratio", type=float, default=0.5,
+                    help="Sample (by policy output, with --temperature) only among the moves at "
+                         "least this fraction as likely as the top move - so the bot varies "
+                         "where the network sees a close call and plays a clearly preferred "
+                         "move every time. Default: 0.5")
+parser.add_argument("--sample-moves", type=int, default=20,
+                    help="Sample for the bot's first N moves of each game, greedy after. "
+                         "Counted from the bot's first genmove, so handicap stones and the "
+                         "opponent's moves don't count. 0: always greedy. Default: 20 - with "
+                         "--sample-ratio 0.5, on b20c256 this took a human's repeated opening "
+                         "line away by ply 30-40 in every game while scoring 49.75%% (+/-2.5) "
+                         "against its own greedy self over 400 games (workspace/sample_ratio/).")
 parser.add_argument("--max-moves", type=int, default=800,
                     help="Force a pass once this many moves have been played. Default: 800 - "
                          "300 was found to essentially never let a game reach a natural "
@@ -57,6 +44,6 @@ policy.model.load_weights(args.weights)
 
 player = ProbabilisticPolicyPlayer(
     policy, temperature=args.temperature, pass_when_offered=True,
-    move_limit=args.max_moves, greedy_start=args.greedy_start,
-    top_k=args.top_k, top_k_responding=args.top_k_responding)
+    move_limit=args.max_moves, sample_ratio=args.sample_ratio,
+    sample_moves=args.sample_moves)
 run_gtp(player, name='NeuralZ', version=args.version)

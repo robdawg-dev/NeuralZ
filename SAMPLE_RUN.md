@@ -372,10 +372,11 @@ genmove black
 
 Your move may differ: the bot deliberately samples its first moves. `-T` keeps Docker from attaching a terminal, so GTP's plain text passes through unchanged;
 that's also what a GUI needs. Useful options:
-- `--temperature 1.0`: how adventurous the bot's early moves are;
-- `--greedy-start 2`: how many opening moves are sampled rather than always the top choice;
-- `--top-k 12` and `--top-k-responding 3`: how many of the best moves sampling may choose
-  from;
+- `--sample-moves 20`: how many of the bot's own moves are sampled rather than always the
+  top choice (0 for always the top choice);
+- `--sample-ratio 0.5`: sampling only chooses among moves at least this fraction as likely
+  as the top one, so a clearly best move is always played;
+- `--temperature 1.0`: how evenly the sampled moves are chosen among those candidates;
 - `--max-moves 800`.
 
 See `python run_gtp_player.py --help`.

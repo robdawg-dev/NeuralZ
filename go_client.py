@@ -88,16 +88,15 @@ def build_parser():
                         help="Seconds to wait for one move's probabilities. Default: 30")
     # The rest as in run_gtp_player.py - see there for the reasoning behind each default.
     parser.add_argument("--temperature", type=float, default=1.0,
-                        help="Sampling temperature - lower is more greedy. Default: 1.0")
-    parser.add_argument("--greedy-start", type=int, default=2,
-                        help="Plies (both colors) played probabilistically before switching "
-                             "to greedy. Default: 2")
-    parser.add_argument("--top-k", type=int, default=12,
-                        help="Probabilistic picks restricted to the top K moves on an empty "
-                             "board. Default: 12")
-    parser.add_argument("--top-k-responding", type=int, default=3,
-                        help="As --top-k, when responding to stones already on the board. "
-                             "Default: 3")
+                        help="Temperature for sampled moves - lower leans harder toward the "
+                             "top candidate. Default: 1.0")
+    parser.add_argument("--sample-ratio", type=float, default=0.5,
+                        help="Sample only among moves at least this fraction as likely as the "
+                             "top move. Default: 0.5")
+    parser.add_argument("--sample-moves", type=int, default=20,
+                        help="Sample for the bot's first N moves of each game (counted from its "
+                             "first genmove, so handicap stones don't count), greedy after. "
+                             "0: always greedy. Default: 20")
     parser.add_argument("--max-moves", type=int, default=800,
                         help="Force a pass once this many moves have been played. Default: 800")
     parser.add_argument("--version", default="0.3",
@@ -113,8 +112,8 @@ def main(argv=None):
         sys.exit("go_client: {}".format(e))
     player = ProbabilisticPolicyPlayer(
         policy, temperature=args.temperature, pass_when_offered=True,
-        move_limit=args.max_moves, greedy_start=args.greedy_start,
-        top_k=args.top_k, top_k_responding=args.top_k_responding)
+        move_limit=args.max_moves, sample_ratio=args.sample_ratio,
+        sample_moves=args.sample_moves)
     run_gtp(player, name="NeuralZ", version=args.version)
 
 

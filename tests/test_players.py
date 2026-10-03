@@ -67,6 +67,27 @@ class TestProbabilisticPolicyPlayer(unittest.TestCase):
         player = ProbabilisticPolicyPlayer(None, sample_ratio=0.5, sample_moves=2)
         self.assertTrue(player._in_sampling_window(state, own_moves=None))
 
+    def test_stone_in_atari_is_detected_for_the_player_to_move(self):
+        state = GameState()
+        state.do_move((0, 1), go.BLACK)
+        state.do_move((0, 0), go.WHITE)  # white corner stone, one liberty left at (1, 0)
+        state.set_current_player(go.WHITE)
+        self.assertTrue(ProbabilisticPolicyPlayer._has_stone_in_atari(state))
+        state.set_current_player(go.BLACK)
+        self.assertFalse(ProbabilisticPolicyPlayer._has_stone_in_atari(state))
+
+    def test_plays_greedy_while_a_stone_is_in_atari(self):
+        class Fixed(object):
+            def eval_state(self, state, moves=None):
+                return [((1, 0), 0.4), ((10, 10), 0.35), ((15, 15), 0.25)]
+        state = GameState()
+        state.do_move((0, 1), go.BLACK)
+        state.do_move((0, 0), go.WHITE)
+        state.set_current_player(go.WHITE)
+        player = ProbabilisticPolicyPlayer(Fixed(), sample_ratio=0.5)
+        np.random.seed(0)
+        self.assertEqual({player.get_move(state) for _ in range(30)}, {(1, 0)})
+
 
 if __name__ == '__main__':
     unittest.main()
