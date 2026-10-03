@@ -3,11 +3,11 @@
 Loads two models from play_tests/models/ and plays --num-games games between
 them, alternating who plays Black each game (so results aren't skewed by
 Black's inherent first-move advantage). Each player uses
-AlphaGo.ai.ProbabilisticPolicyPlayer with a greedy_start: it samples moves
-proportional to the policy's output probability for the first --greedy-start
-moves of the game (so successive games actually differ from each other),
-then plays the highest-probability move for the rest (so most of the game
-reflects the network's real preferences, not random sampling noise).
+AlphaGo.ai.ProbabilisticPolicyPlayer: for its first --sample-moves moves it samples
+among the close calls (moves at least --sample-ratio as likely as its top move), so
+successive games actually differ from each other, then plays the highest-probability
+move for the rest (so most of the game reflects the network's real preferences, not
+random sampling noise).
 
 Every game is saved as an SGF, and a results.json summarizing every game
 (including the winner as determined by GameState.get_score()/
@@ -50,12 +50,12 @@ def play_one_game(black_policy, white_policy, board_size, args, rng_seed):
     np.random.seed(rng_seed)
     black_player = ProbabilisticPolicyPlayer(
         black_policy, temperature=args.temperature, pass_when_offered=True,
-        move_limit=args.max_moves, greedy_start=args.greedy_start,
-        top_k=args.top_k, top_k_responding=args.top_k_responding)
+        move_limit=args.max_moves, sample_ratio=args.sample_ratio,
+        sample_moves=args.sample_moves)
     white_player = ProbabilisticPolicyPlayer(
         white_policy, temperature=args.temperature, pass_when_offered=True,
-        move_limit=args.max_moves, greedy_start=args.greedy_start,
-        top_k=args.top_k, top_k_responding=args.top_k_responding)
+        move_limit=args.max_moves, sample_ratio=args.sample_ratio,
+        sample_moves=args.sample_moves)
 
     state = go.GameState(size=board_size)
     n_moves = 0
@@ -90,32 +90,14 @@ def main():
                              "uncaptured dead groups on the board that naive area scoring "
                              "miscounts as alive; 800 was confirmed to reach 100/100 natural "
                              "endings (match_b10c128_vs_2016net_20260912_154303).")
-    parser.add_argument("--greedy-start", type=int, default=10,
-                        help="Play probabilistically (sampled by policy output, restricted to "
-                             "--top-k/--top-k-responding) for this many total plies of the "
-                             "game (both colors combined - see "
-                             "AlphaGo.ai.ProbabilisticPolicyPlayer), then switch to greedy "
-                             "(highest-probability move) for the rest. Default: 10 - not the "
-                             "2 used for the live GTP bot (run_gtp_player.py), which only "
-                             "needs one probabilistic move per color to avoid a human "
-                             "trivially replaying the same opening. A match run needs many "
-                             "distinct games instead: since every probabilistic ply past the "
-                             "first uses --top-k-responding, the number of distinct possible "
-                             "games is top_k * top_k_responding^(greedy_start-1) - only 36 "
-                             "at greedy_start=2 (12*3), guaranteeing repeats across 100 games "
-                             "by pigeonhole, versus ~236K at greedy_start=10 (12*3^9) - under "
-                             "~2%% expected chance of even one repeated pair in 100 games.")
     parser.add_argument("--temperature", type=float, default=1.0,
-                        help="Temperature for the probabilistic opening moves. Default: 1.0")
-    parser.add_argument("--top-k", type=int, default=12,
-                        help="Restrict probabilistic sampling to this many highest-probability "
-                             "legal moves when the board is empty (i.e. this player is moving "
-                             "first). Default: 12 - see benchmarks/_second_move_survey.py and "
-                             "the discussion that produced it.")
-    parser.add_argument("--top-k-responding", type=int, default=3,
-                        help="Same as --top-k, but for when a player is responding to "
-                             "something already on the board. Default: 3 - these positions "
-                             "are typically more concentrated than an empty board.")
+                        help="Temperature for the sampled moves. Default: 1.0")
+    parser.add_argument("--sample-ratio", type=float, default=0.5,
+                        help="Sample only among moves at least this fraction as likely as the "
+                             "top move (see run_gtp_player.py). Default: 0.5")
+    parser.add_argument("--sample-moves", type=int, default=20,
+                        help="Sample for each player's first N moves of a game, greedy after. "
+                             "Default: 20")
     parser.add_argument("--komi", type=float, default=7.5)
     parser.add_argument("--seed", type=int, default=None,
                         help="Base seed for reproducibility - each game gets seed+game_index. "
@@ -183,10 +165,9 @@ def main():
         "model_b": args.model_b,
         "num_games": args.num_games,
         "max_moves": args.max_moves,
-        "greedy_start": args.greedy_start,
-        "top_k": args.top_k,
-        "top_k_responding": args.top_k_responding,
         "temperature": args.temperature,
+        "sample_ratio": args.sample_ratio,
+        "sample_moves": args.sample_moves,
         "komi": args.komi,
         "base_seed": base_seed,
         "scoring_method": "GameState.get_score()/get_winner_color() (area scoring) - accuracy "

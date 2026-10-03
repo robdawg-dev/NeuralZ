@@ -22,9 +22,11 @@ class ScriptedPlayer(object):
     def __init__(self, moves=()):
         self.moves = list(moves)
         self.asked_for = []
+        self.own_moves = []
 
-    def get_move(self, state):
+    def get_move(self, state, own_moves=None):
         self.asked_for.append(state.get_current_player())
+        self.own_moves.append(own_moves)
         return self.moves.pop(0) if self.moves else go.PASS
 
 
@@ -333,3 +335,33 @@ def test_run_gtp_answers_each_command_until_quit(capsys):
     assert out == "=1 Loop\n\n=2\n\n=3\n\n=4 G3\n\n=5\n\n"
     assert "GTP engine ready" in err
     assert next(lines) == "never read"
+
+
+# --- the player's own move count ------------------------------------------------------
+
+def test_own_moves_counts_genmoves_per_color():
+    player = ScriptedPlayer()
+    engine, _ = _engine(player)
+    for command in ["genmove black", "genmove white", "genmove black", "genmove black"]:
+        engine.send(command)
+    assert player.own_moves == [0, 0, 1, 2]
+
+
+def test_own_moves_ignores_handicap_sent_as_plain_moves():
+    player = ScriptedPlayer()
+    engine, _ = _engine(player)
+    for vertex in ["D4", "Q16", "D16", "Q4"]:
+        engine.send("play black {}".format(vertex))
+    engine.send("play white K10")
+    engine.send("genmove black")
+    assert player.own_moves == [0]
+
+
+@pytest.mark.parametrize("command", ["clear_board", "boardsize 19"])
+def test_own_moves_resets_with_the_board(command):
+    player = ScriptedPlayer()
+    engine, _ = _engine(player)
+    engine.send("genmove black")
+    engine.send(command)
+    engine.send("genmove black")
+    assert player.own_moves == [0, 0]

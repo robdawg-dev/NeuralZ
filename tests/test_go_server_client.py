@@ -126,7 +126,7 @@ def test_bad_requests_are_rejected(server):
 def test_player_plays_legal_moves_through_the_server(server):
     url, _policy = server
     player = ProbabilisticPolicyPlayer(go_client.RemotePolicy(url), pass_when_offered=True,
-                                       greedy_start=2, top_k=12, top_k_responding=3)
+                                       sample_ratio=0.5, sample_moves=20)
     state = GameState()
     for _ in range(20):
         move = player.get_move(state)

@@ -153,6 +153,11 @@ class GTPGameConnector(object):
     def __init__(self, player):
         self._state = go.GameState(enforce_superko=True)
         self._player = player
+        # genmoves answered this game, per color - the player's own move count. Counted
+        # here rather than from the board: a controller may send handicap stones as
+        # ordinary 'play' moves, which the board can't tell apart from real ones. Resets
+        # with the board; a controller that reconnects and replays a game restarts it.
+        self._own_moves = {}
         # Not currently read anywhere (final scoring goes through an external gnugo
         # process via SGF export, not through GameState) - kept only so 'set_komi'
         # has somewhere to write to, matching the previous (already unused) behavior.
@@ -160,6 +165,7 @@ class GTPGameConnector(object):
 
     def clear(self):
         self._state = go.GameState(self._state.get_size(), enforce_superko=True)
+        self._own_moves = {}
 
     def make_move(self, color, vertex):
         """Play a move under this engine's own rules (including positional superko) - for
@@ -184,13 +190,15 @@ class GTPGameConnector(object):
 
     def set_size(self, n):
         self._state = go.GameState(n, enforce_superko=True)
+        self._own_moves = {}
 
     def set_komi(self, k):
         self._komi = k
 
     def get_move(self, color):
         self._state.set_current_player(_GTP_TO_GO_COLOR[color])
-        move = self._player.get_move(self._state)
+        move = self._player.get_move(self._state, own_moves=self._own_moves.get(color, 0))
+        self._own_moves[color] = self._own_moves.get(color, 0) + 1
         if move == go.PASS:
             return gtp.PASS
         else:
