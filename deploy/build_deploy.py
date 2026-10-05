@@ -38,6 +38,7 @@ RUNTIME_FILES = [
     "AlphaGo/models/__init__.py",
     "AlphaGo/models/nn_util.py",
     "AlphaGo/models/policy.py",
+    "AlphaGo/models/value.py",
     "AlphaGo/training/__init__.py",
     "AlphaGo/training/shard_stream.py",
     "interface/__init__.py",

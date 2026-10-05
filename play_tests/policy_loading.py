@@ -122,6 +122,15 @@ MODEL_SPECS = {
         "json": "model_newres_b20c256_g5.json",
         "weights": "weights.00067.weights.h5",
     },
+    "score_b20_v1": {
+        # PolicyValueNet: b20c256 epoch 67 + a fresh value/score head, all blocks trained
+        # on b20's top-8 sibling positions with the policy loss kept on (SCORE_NET_PLAN.md,
+        # workspace/runs/score_b20_v1). For one-ply lookahead (match_networks --lookahead-a).
+        # Pilot epoch 18 as saved (lookahead test, score top 10: 458 points lost vs greedy
+        # 882; BN-refreshed 461, so not used).
+        "json": "model.json",
+        "weights": "weights.00018.weights.h5",
+    },
     "2016net": {
         # Converted from the original legacy Keras 2.0.4 format by
         # convert_2016net.py - the untouched originals live in Data/Mamifreak/.

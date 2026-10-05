@@ -148,9 +148,47 @@ class ProbabilisticPolicyPlayer(object):
                 # probabilistic, among the close calls
                 return self._sample(self._close_candidates(move_probs))
 
-            # greedy
-            max_prob = max(move_probs, key=itemgetter(1))
-            return max_prob[0]
+            return self._choose(state, move_probs)
 
         # No 'sensible' moves available, so do pass move
         return go.PASS
+
+    def _choose(self, state, move_probs):
+        """The move outside the sampling window: greedy (the policy's top move)."""
+        return max(move_probs, key=itemgetter(1))[0]
+
+
+class ScoreLookaheadPlayer(ProbabilisticPolicyPlayer):
+    """ProbabilisticPolicyPlayer whose moves outside the sampling window come from one-ply
+    lookahead (SCORE_NET_PLAN.md): the policy's top_k moves are each played on a copy of
+    the board, the resulting boards are scored in one batch by the same PolicyValueNet's
+    score head, and the move leaving the player best off is played - unless it is predicted
+    less than `margin` points better than the policy's top move, which then stands.
+
+    komi: the game's komi (White's). The board doesn't carry it; the score head takes it
+    from the side of each board's player to move.
+    """
+
+    def __init__(self, policy_value_net, komi, top_k=10, margin=0.0, **kwargs):
+        super(ScoreLookaheadPlayer, self).__init__(policy_value_net, **kwargs)
+        self.komi = komi
+        self.top_k = top_k
+        self.margin = margin
+
+    def _choose(self, state, move_probs):
+        top = sorted(move_probs, key=itemgetter(1), reverse=True)[:self.top_k]
+        if len(top) == 1:
+            return top[0][0]
+        # the opponent is to move on every candidate board: its komi is the other side's
+        mover_komi = self.komi if state.get_current_player() == go.WHITE else -self.komi
+        boards = []
+        for move, _p in top:
+            child = state.copy()
+            child.do_move(move)
+            boards.append(child)
+        _value, opponent_score = self.policy.eval_value(boards, [-mover_komi] * len(boards))
+        ours = -np.asarray(opponent_score, dtype=np.float64)
+        best = int(np.argmax(ours))
+        if ours[best] < ours[0] + self.margin:
+            return top[0][0]
+        return top[best][0]

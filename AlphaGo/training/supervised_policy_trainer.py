@@ -9,6 +9,7 @@ import h5py
 import numpy as np
 import tensorflow as tf  # noqa: F401
 
+import keras
 from keras import mixed_precision, ops, utils as keras_utils
 from keras.metrics import TopKCategoricalAccuracy
 from keras.optimizers import SGD
@@ -19,6 +20,9 @@ from AlphaGo.models.policy import CNNPolicy
 from AlphaGo.training.shard_stream import (
     BATCH_TRANSFORMATIONS, decode_on_device, find_split_shards, dataset_info,
     shard_batch_generator, validation_arrays)
+from AlphaGo.training.joint_data import (
+    decode_joint_on_device, joint_batch_generator, joint_validation_arrays, load_ownership)
+from AlphaGo.training.value_head_trainer import score_loss, side_agreement
 
 
 def prediction_entropy(y_true, y_pred):
@@ -31,16 +35,20 @@ def prediction_entropy(y_true, y_pred):
 
 def sanity_checked_generator(base_generator, out_directory, label, n_transforms,
                              check_every=50):
-    """Wraps a ((packed, choices), Y) batch generator, checking the first 5 batches and
-    every check_every-th for Y rows that don't sum to 1 and symmetry choices outside
-    [0, n_transforms). (The packed states themselves are bits - 0/1 by construction.) A
-    bad batch is printed and appended to out_directory/batch_sanity_log.json, so data
-    corruption shows up at the step it starts - including a stream that's wrong from step
-    0, which epoch-level metrics alone don't reveal.
+    """Wraps a ((packed, choices), Y) batch generator - or a joint one, ((packed, choices,
+    komi), (Y, value, score, ownership), weights) - checking the first 5 batches and
+    every check_every-th for move-label rows Y that don't sum to 1 and symmetry choices
+    outside [0, n_transforms). (The packed states themselves are bits - 0/1 by
+    construction.) A bad batch is printed and appended to
+    out_directory/batch_sanity_log.json, so data corruption shows up at the step it starts
+    - including a stream that's wrong from step 0, which epoch-level metrics alone don't
+    reveal. Batches pass through unchanged.
     """
     log_path = os.path.join(out_directory, "batch_sanity_log.json")
     step = 0
-    for (packed, choices), Y in base_generator:
+    for batch in base_generator:
+        choices = batch[0][1]
+        Y = batch[1][0] if isinstance(batch[1], tuple) else batch[1]
         step += 1
         if step % check_every == 0 or step <= 5:
             row_sums = Y.sum(axis=1)
@@ -62,7 +70,7 @@ def sanity_checked_generator(base_generator, out_directory, label, n_transforms,
                 existing.append(entry)
                 with open(log_path, "w") as f:
                     json.dump(existing, f, indent=2)
-        yield (packed, choices), Y
+        yield batch
 
 
 class WarmupCallback(Callback):
@@ -322,6 +330,10 @@ def add_run_arguments(parser):
     parser.add_argument("--mixed-precision", default=False, action="store_true", help="Train with the mixed_float16 policy: fp16 compute, fp32 weights, with dynamic loss scaling. The final softmax stays float32 (see policy.py). Default: off (float32)")  # noqa: E501
     parser.add_argument("--symmetries", help="Comma-separated list of transforms, subset of noop,rot90,rot180,rot270,fliplr,flipud,diag1,diag2", default='noop,rot90,rot180,rot270,fliplr,flipud,diag1,diag2')  # noqa: E501
     parser.add_argument("--seed", help="Seed for weight initialization and for the per-position symmetry choices (train and val use seed and seed+1), making a run reproducible. Default: unseeded", type=int, default=None)  # noqa: E501
+    # joint networks only (PolicyValueNet.create_network, four outputs) - see JOINT_TRAINING_PLAN.md
+    parser.add_argument("--value-weight", type=float, default=1.0, help="Joint network only: weight of the win-rate loss against the policy loss's 1. Default: 1.0")  # noqa: E501
+    parser.add_argument("--score-weight", type=float, default=0.5, help="Joint network only: weight of the score loss (Huber on score / 20). Default: 0.5")  # noqa: E501
+    parser.add_argument("--ownership-weight", type=float, default=1.0, help="Joint network only: weight of the ownership loss (mean squared error over the points). Default: 1.0")  # noqa: E501
 
 
 def set_up_run(args, resume_setting_keys, require_latest_checkpoint):
@@ -418,9 +430,17 @@ def _load_model_and_shards(args):
         print("\t%d training positions in %d shards" % (sum(train_sizes), len(train_shards)))
         print("\t%d validation positions in %d shards" % (sum(val_sizes), len(val_shards)))
 
+    # A joint policy + value + score + ownership network (PolicyValueNet.create_network)
+    # trains on the value sidecars and ownership tables as well - see joint_data.py.
+    joint = len(policy.model.outputs) == 4
     shards = types.SimpleNamespace(train=train_shards, train_sizes=train_sizes,
                                    val=val_shards, val_sizes=val_sizes,
-                                   board_size=board_size, n_features=n_features)
+                                   board_size=board_size, n_features=n_features, joint=joint)
+    if joint:
+        shards.train_ownership = load_ownership(os.path.join(args.train_data, "train"))
+        shards.val_ownership = load_ownership(os.path.join(args.train_data, "val"))
+        if args.verbose:
+            print("joint network: value sidecars and ownership tables loaded")
     return policy.model, shards
 
 
@@ -500,40 +520,65 @@ def _open_data(args, shards, epochs_already_trained):
     # train and val use distinct seeds so their symmetry choices are independent
     train_seed = args.seed
     val_seed = None if args.seed is None else args.seed + 1
+    if shards.joint:
+        base_generator = joint_batch_generator(
+            shards.train, shards.train_sizes, shards.train_ownership, args.minibatch,
+            symmetries, shards.board_size, seed=train_seed, start_position=start_position)
+    else:
+        base_generator = shard_batch_generator(
+            shards.train, shards.train_sizes, args.minibatch, shards.board_size, symmetries,
+            seed=train_seed, start_position=start_position)
     train_data_generator = sanity_checked_generator(
-        shard_batch_generator(shards.train, shards.train_sizes, args.minibatch,
-                              shards.board_size, symmetries, seed=train_seed,
-                              start_position=start_position),
-        args.out_directory, "train", len(symmetries))
+        base_generator, args.out_directory, "train", len(symmetries))
 
     # Validation is a fixed prefix of val/: the shards are already a uniform random
     # sample, and a fixed set means val_loss only moves because the model does.
     n_val_data = sum(shards.val_sizes)
     n_val_eval = min(args.validation_length or n_val_data, n_val_data)
     print("materializing {} validation positions into fixed arrays...".format(n_val_eval))
-    X_val, Y_val = validation_arrays(shards.val, shards.val_sizes, n_val_eval,
+    if shards.joint:
+        val_data = joint_validation_arrays(shards.val, shards.val_sizes, shards.val_ownership,
+                                           n_val_eval, symmetries, shards.board_size,
+                                           seed=val_seed)
+    else:
+        val_data = validation_arrays(shards.val, shards.val_sizes, n_val_eval,
                                      shards.board_size, symmetries, seed=val_seed)
     # Packed like the training batches: ~2 KB per position rather than 69 KB of float32.
     # Built on the CPU all the same: from_tensor_slices() embeds the arrays in the graph,
     # and TF would otherwise place them in GPU memory whole. Batches then stream to the
     # GPU as the training data does.
     with tf.device('/cpu:0'):
-        val_dataset = tf.data.Dataset.from_tensor_slices((X_val, Y_val)).batch(args.minibatch)
+        val_dataset = tf.data.Dataset.from_tensor_slices(val_data).batch(args.minibatch)
     # The dataset holds its own copy; dropping the originals keeps host memory from
     # holding it twice.
-    del X_val, Y_val
+    del val_data
     import gc
     gc.collect()
     return steps_per_epoch, total_steps, train_data_generator, val_dataset
 
 
-def compile_model(model, optimizer):
-    """The one compile() every run uses: loss, metrics and XLA."""
+def compile_model(model, optimizer, args=None):
+    """The one compile() every run uses: loss, metrics and XLA. A joint network (four
+    outputs: policy, value, score, ownership) gets a loss per output, weighted by
+    args.value_weight / score_weight / ownership_weight against the policy's 1."""
+    policy_metrics = ["accuracy", TopKCategoricalAccuracy(k=5, name="top5_accuracy"),
+                      prediction_entropy]
+    if len(model.outputs) == 4:
+        model.compile(
+            optimizer=optimizer,
+            loss=["categorical_crossentropy", keras.losses.BinaryCrossentropy(),
+                  score_loss, "mse"],
+            loss_weights=[1.0, args.value_weight, args.score_weight, args.ownership_weight],
+            # weighted: value and score weigh 0 where KataGo left no annotation
+            weighted_metrics=[policy_metrics,
+                              [keras.metrics.MeanAbsoluteError(name="mae"), side_agreement],
+                              [keras.metrics.MeanAbsoluteError(name="mae")],
+                              [keras.metrics.MeanAbsoluteError(name="mae")]],
+            jit_compile=True)
+        return
     # jit_compile=True (XLA): measured 102.5ms/step vs 113ms/step without XLA.
     model.compile(
-        loss='categorical_crossentropy', optimizer=optimizer,
-        metrics=["accuracy", TopKCategoricalAccuracy(k=5, name="top5_accuracy"),
-                 prediction_entropy],
+        loss='categorical_crossentropy', optimizer=optimizer, metrics=policy_metrics,
         jit_compile=True)
 
 
@@ -548,8 +593,12 @@ def _decode_in_steps(model, board_size, n_features, symmetries):
     """
     dtype = model.inputs[0].dtype
     train_step, test_step = model.train_step, model.test_step
+    joint = len(model.outputs) == 4
 
     def decoded(data):
+        if joint:
+            x, y, w = data
+            return decode_joint_on_device(x, y, w, board_size, n_features, symmetries, dtype)
         (packed, choices), y = data
         return decode_on_device(packed, choices, board_size, n_features, symmetries,
                                 dtype), y
@@ -703,7 +752,7 @@ def run_training(cmd_line_args=None):
     run = set_up_run(args, TRAINING_RESUME_SETTINGS, require_latest_checkpoint=True)
     schedule = _cosine_schedule if args.lr_schedule == "cosine" else _plateau_schedule
     optimizer, lr_schedule, callback_groups = schedule(args, run)
-    compile_model(run.model, optimizer)
+    compile_model(run.model, optimizer, args)
     if run.resume:
         # After compile() - see load_checkpoint.
         load_checkpoint(run.model, run.weights_path)

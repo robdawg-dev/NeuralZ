@@ -1,7 +1,7 @@
 import unittest
 import numpy as np
 from AlphaGo import go
-from AlphaGo.ai import ProbabilisticPolicyPlayer
+from AlphaGo.ai import ProbabilisticPolicyPlayer, ScoreLookaheadPlayer
 from AlphaGo.go import GameState
 
 
@@ -87,6 +87,65 @@ class TestProbabilisticPolicyPlayer(unittest.TestCase):
         player = ProbabilisticPolicyPlayer(Fixed(), sample_ratio=0.5)
         np.random.seed(0)
         self.assertEqual({player.get_move(state) for _ in range(30)}, {(1, 0)})
+
+
+class FakeScoreNet(object):
+    """Policy of fixed move probabilities; scores each candidate board by its last move,
+    from the side of its player to move (the opponent of the player choosing)."""
+
+    def __init__(self, move_probs, opponent_scores):
+        self.move_probs = move_probs
+        self.opponent_scores = opponent_scores
+        self.value_calls = []
+
+    def eval_state(self, state, moves=None):
+        return list(self.move_probs)
+
+    def eval_value(self, states, komis):
+        self.value_calls.append(([s.get_history()[-1] for s in states], list(komis)))
+        scores = [self.opponent_scores[s.get_history()[-1]] for s in states]
+        return np.zeros(len(states)), np.array(scores)
+
+
+class TestScoreLookaheadPlayer(unittest.TestCase):
+
+    move_probs = [((3, 3), 0.5), ((15, 15), 0.3), ((9, 9), 0.2)]
+
+    def test_plays_the_move_leaving_the_opponent_worst_off(self):
+        net = FakeScoreNet(self.move_probs, {(3, 3): 2.0, (15, 15): -4.0, (9, 9): 1.0})
+        player = ScoreLookaheadPlayer(net, 7.5, top_k=10, sample_moves=0)
+        self.assertEqual(player.get_move(GameState()), (15, 15))
+
+    def test_only_scores_the_policy_top_k(self):
+        net = FakeScoreNet(self.move_probs, {(3, 3): 2.0, (15, 15): 1.0, (9, 9): -9.0})
+        player = ScoreLookaheadPlayer(net, 7.5, top_k=2, sample_moves=0)
+        self.assertEqual(player.get_move(GameState()), (15, 15))
+        self.assertEqual(net.value_calls[0][0], [(3, 3), (15, 15)])
+
+    def test_keeps_the_top_move_unless_another_beats_it_by_the_margin(self):
+        net = FakeScoreNet(self.move_probs, {(3, 3): 2.0, (15, 15): 1.0, (9, 9): 3.0})
+        self.assertEqual(ScoreLookaheadPlayer(net, 7.5, margin=1.5, sample_moves=0)
+                         .get_move(GameState()), (3, 3))
+        self.assertEqual(ScoreLookaheadPlayer(net, 7.5, margin=0.5, sample_moves=0)
+                         .get_move(GameState()), (15, 15))
+
+    def test_candidate_boards_get_the_opponents_komi(self):
+        scores = {(3, 3): 0.0, (15, 15): 0.0, (9, 9): 0.0}
+        net = FakeScoreNet(self.move_probs, scores)
+        ScoreLookaheadPlayer(net, 7.5, sample_moves=0).get_move(GameState())
+        self.assertEqual(net.value_calls[-1][1], [7.5] * 3)    # Black chose: White to move
+        state = GameState()
+        state.do_move((0, 0))
+        ScoreLookaheadPlayer(net, 7.5, sample_moves=0).get_move(state)
+        self.assertEqual(net.value_calls[-1][1], [-7.5] * 3)   # White chose: Black to move
+
+    def test_samples_without_lookahead_inside_the_window(self):
+        net = FakeScoreNet(self.move_probs, {})
+        player = ScoreLookaheadPlayer(net, 7.5, sample_ratio=0.5, sample_moves=5)
+        np.random.seed(0)
+        moves = {player.get_move(GameState()) for _ in range(30)}
+        self.assertEqual(moves, {(3, 3), (15, 15)})
+        self.assertEqual(net.value_calls, [])
 
 
 if __name__ == '__main__':

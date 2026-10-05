@@ -1,0 +1,7 @@
+# NewResPolicy vs ResTowerPolicy - compared against p2_lr0.8_w1000 (phase2.queue), with the
+# same recipe: LR 0.8 after a 1,000-step warmup, held for 7,000 steps, seed 90001.
+nr_g5_lr0.8_w1000 AlphaGo.training.supervised_policy_trainer workspace/models/model_newres_b15c192_g5.json workspace/lr_study/shards {out} --minibatch 1024 --steps-per-epoch 500 --epochs 14 --validation-length 20000 --lr-schedule plateau --learning-rate 0.8 --warmup-steps 1000 --warmup-start-lr 0.0001 --plateau-patience 1000 --mixed-precision --seed 90001
+# b20c256 (head width 48), minibatch 1024 as two accumulated halves of 512 (b20c256 at 1024
+# needs ~16 GB) - otherwise the same recipe as nr_g5_lr0.8_w1000. Ran 2026-09-28 with the
+# trainer's --accumulation-steps, since removed, so kept here only as a record.
+# nr_b20c256_g5_lr0.8_w1000 AlphaGo.training.supervised_policy_trainer workspace/models/model_newres_b20c256_g5.json workspace/lr_study/shards {out} --minibatch 1024 --accumulation-steps 2 --steps-per-epoch 500 --epochs 14 --validation-length 20000 --lr-schedule plateau --learning-rate 0.8 --warmup-steps 1000 --warmup-start-lr 0.0001 --plateau-patience 1000 --mixed-precision --seed 90001

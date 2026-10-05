@@ -39,23 +39,30 @@ import numpy as np  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from AlphaGo import go  # noqa: E402
-from AlphaGo.ai import ProbabilisticPolicyPlayer  # noqa: E402
+from AlphaGo.ai import ProbabilisticPolicyPlayer, ScoreLookaheadPlayer  # noqa: E402
 from AlphaGo.util import save_gamestate_to_sgf  # noqa: E402
 from play_tests.policy_loading import MODEL_SPECS, load_policy  # noqa: E402
 
 SGF_DIR = os.path.join(os.path.dirname(__file__), "sgf")
 
 
-def play_one_game(black_policy, white_policy, board_size, args, rng_seed):
+def make_player(policy, args, lookahead_k):
+    """Today's player, or with lookahead_k > 0 the score-lookahead player (policy must
+    then be a PolicyValueNet) - the same sampling window either way."""
+    kwargs = dict(temperature=args.temperature, pass_when_offered=True,
+                  move_limit=args.max_moves, sample_ratio=args.sample_ratio,
+                  sample_moves=args.sample_moves)
+    if lookahead_k:
+        return ScoreLookaheadPlayer(policy, args.komi, top_k=lookahead_k,
+                                    margin=args.lookahead_margin, **kwargs)
+    return ProbabilisticPolicyPlayer(policy, **kwargs)
+
+
+def play_one_game(black_policy, white_policy, board_size, args, rng_seed,
+                  black_lookahead=0, white_lookahead=0):
     np.random.seed(rng_seed)
-    black_player = ProbabilisticPolicyPlayer(
-        black_policy, temperature=args.temperature, pass_when_offered=True,
-        move_limit=args.max_moves, sample_ratio=args.sample_ratio,
-        sample_moves=args.sample_moves)
-    white_player = ProbabilisticPolicyPlayer(
-        white_policy, temperature=args.temperature, pass_when_offered=True,
-        move_limit=args.max_moves, sample_ratio=args.sample_ratio,
-        sample_moves=args.sample_moves)
+    black_player = make_player(black_policy, args, black_lookahead)
+    white_player = make_player(white_policy, args, white_lookahead)
 
     state = go.GameState(size=board_size)
     n_moves = 0
@@ -98,6 +105,13 @@ def main():
     parser.add_argument("--sample-moves", type=int, default=20,
                         help="Sample for each player's first N moves of a game, greedy after. "
                              "Default: 20")
+    parser.add_argument("--lookahead-a", type=int, default=0,
+                        help="Player A picks its moves outside the sampling window by one-ply "
+                             "score lookahead over its policy's top K moves (model_a must be a "
+                             "PolicyValueNet). Default: 0 (off)")
+    parser.add_argument("--lookahead-margin", type=float, default=0.0,
+                        help="Lookahead keeps the policy's top move unless another is "
+                             "predicted at least this many points better. Default: 0")
     parser.add_argument("--komi", type=float, default=7.5)
     parser.add_argument("--seed", type=int, default=None,
                         help="Base seed for reproducibility - each game gets seed+game_index. "
@@ -113,7 +127,7 @@ def main():
         args.model_a, args.model_b, "GPU" if args.gpu else "CPU only"))
     policy_a = load_policy(args.model_a)
     policy_b = load_policy(args.model_b)
-    board_size = policy_a.model.input_shape[1]
+    board_size = int(policy_a.model.inputs[0].shape[1])  # a PolicyValueNet also takes komi
 
     run_dir = os.path.join(SGF_DIR, "match_{}_vs_{}_{}".format(
         args.model_a, args.model_b, time.strftime("%Y%m%d_%H%M%S")))
@@ -134,7 +148,9 @@ def main():
         print("Game {}/{}: Black={} White={} ...".format(
             i + 1, args.num_games, black_name, white_name))
         state, n_moves, ended_naturally, score, winner_color = play_one_game(
-            black_policy, white_policy, board_size, args, rng_seed=base_seed + i)
+            black_policy, white_policy, board_size, args, rng_seed=base_seed + i,
+            black_lookahead=args.lookahead_a if a_plays_black else 0,
+            white_lookahead=0 if a_plays_black else args.lookahead_a)
 
         winner_name = black_name if winner_color == go.BLACK else white_name
         wins[winner_name] += 1
@@ -168,6 +184,8 @@ def main():
         "temperature": args.temperature,
         "sample_ratio": args.sample_ratio,
         "sample_moves": args.sample_moves,
+        "lookahead_a": args.lookahead_a,
+        "lookahead_margin": args.lookahead_margin,
         "komi": args.komi,
         "base_seed": base_seed,
         "scoring_method": "GameState.get_score()/get_winner_color() (area scoring) - accuracy "

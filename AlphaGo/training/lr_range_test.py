@@ -22,6 +22,7 @@ import os
 import json
 import types
 
+import keras
 import tensorflow as tf
 from keras.callbacks import Callback
 from keras.optimizers import SGD
@@ -151,21 +152,24 @@ def _grad_norm_and_loss_scale_train_step(self, data):
     precision) the optimizer has no such variable and loss_scale is left out of results
     entirely.
     """
-    x, y = data
+    # (x, y) for a policy network; (x, y, sample_weight) for a joint one, whose value and
+    # score weigh 0 where KataGo left no annotation
+    x, y, sample_weight = keras.utils.unpack_x_y_sample_weight(data)
     with tf.GradientTape() as tape:
         y_pred = self(x, training=True)
-        loss = self.compute_loss(y=y, y_pred=y_pred)
+        loss = self.compute_loss(x=x, y=y, y_pred=y_pred, sample_weight=sample_weight)
         scaled_loss = self.optimizer.scale_loss(loss) if self.optimizer is not None else loss
     trainable_vars = self.trainable_variables
     gradients = tape.gradient(scaled_loss, trainable_vars)
     grad_norm = tf.linalg.global_norm(gradients)
     self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+    # As Model.train_step: the loss tracker by hand, everything compiled through
+    # compute_metrics (a joint network's per-output loss trackers were already updated by
+    # compute_loss).
     for metric in self.metrics:
         if metric.name == "loss":
             metric.update_state(loss)
-        else:
-            metric.update_state(y, y_pred)
-    results = {m.name: m.result() for m in self.metrics}
+    results = dict(self.compute_metrics(x, y, y_pred, sample_weight=sample_weight))
     results["batch_loss"] = loss
     results["grad_norm"] = grad_norm
     for v in self.optimizer.variables:
@@ -241,7 +245,7 @@ def run_range_test(cmd_line_args=None):
                   args.range_floor_lr, args.range_ceiling_lr,
                   max(1, run.total_steps - range_warmup_steps)))
 
-    compile_model(run.model, optimizer)
+    compile_model(run.model, optimizer, args)
     if run.resume:
         # Weights only: a warm-started sweep starts with a fresh optimizer (see --weights).
         load_checkpoint(run.model, run.weights_path, with_optimizer=False)

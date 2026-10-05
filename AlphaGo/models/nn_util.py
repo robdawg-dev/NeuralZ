@@ -78,17 +78,18 @@ class NeuralNetBase(object):
         # loaded model's per-layer compute_dtype against a freshly-constructed one under
         # the same global policy: every layer past the input stayed "float32" after
         # loading, while direct construction correctly picked up "mixed_float16".
-        # Strip the baked-in dtype from every layer except the one deliberate exception
-        # in this codebase's own architecture code (policy.py): the softmax activation
-        # is intentionally pinned to float32 regardless of the global policy, for
-        # numerical stability. Everything else should track the current policy, matching
-        # how a freshly-built model behaves.
+        # Strip the baked-in dtype from every layer except the deliberate exceptions in
+        # this codebase's own architecture code: the output activations - the policy
+        # softmax (policy.py) and the value head's sigmoid and linear outputs (value.py) -
+        # are pinned to float32 regardless of the global policy, for numerical stability.
+        # Every other Activation here is a ReLU. Everything else should track the current
+        # policy, matching how a freshly-built model behaves.
         keras_model_config = json.loads(object_specs['keras_model'])
         for layer_config in keras_model_config['config']['layers']:
             layer_cfg = layer_config.get('config', {})
-            is_pinned_softmax = (layer_config.get('class_name') == 'Activation' and
-                                 layer_cfg.get('activation') == 'softmax')
-            if not is_pinned_softmax:
+            is_pinned_output = (layer_config.get('class_name') == 'Activation' and
+                                layer_cfg.get('activation') != 'relu')
+            if not is_pinned_output:
                 layer_cfg.pop('dtype', None)
 
         new_net.model = model_from_json(json.dumps(keras_model_config),
@@ -133,10 +134,11 @@ def neuralnet(cls):
 
 def _registered_class(class_name):
     """The model class a model JSON names by its "class" entry. The classes register
-    themselves (@neuralnet) when policy.py is imported, so it's imported here - any script
-    can load a model without importing it first. Imported inside the function because
-    policy.py imports this module."""
+    themselves (@neuralnet) when policy.py and value.py are imported, so they're imported
+    here - any script can load a model without importing them first. Imported inside the
+    function because both import this module."""
     import AlphaGo.models.policy  # noqa: F401
+    import AlphaGo.models.value  # noqa: F401
     try:
         return NeuralNetBase.subclasses[class_name]
     except KeyError:

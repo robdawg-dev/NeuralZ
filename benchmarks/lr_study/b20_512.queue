@@ -1,0 +1,13 @@
+# LR check for the 48-hour run: NewResPolicy b20c256 (head width 48) at minibatch 512 on the
+# 60M-position data (workspace/prod_60m/shards). See LR_STUDY_PLAN.md.
+#
+# A slow range test as a sanity check - 250 steps to 1e-3, then exponentially to 10 over
+# 5,000 steps (the Phase 1 slow ramp's rate, in steps).
+b20_512_range_s90001 AlphaGo.training.lr_range_test workspace/models/model_newres_b20c256_g5.json workspace/prod_60m/shards {out} --minibatch 512 --steps-per-epoch 250 --epochs 21 --validation-length 10240 --range-warmup-steps 250 --range-warmup-start-lr 1e-4 --range-floor-lr 1e-3 --range-ceiling-lr 10 --range-check-every 10 --mixed-precision --seed 90001
+# Held runs, Phase 2's recipe at half the batch: 7,000 steps (3.6M positions), the LR held
+# after a 2,000-step warmup (1M positions, as 1,000 steps at 1024). 0.4 is the linear-
+# scaling equivalent of batch 1024's 0.8; 0.8 is the same nominal LR.
+b20_512_lr0.4_w2000 AlphaGo.training.supervised_policy_trainer workspace/models/model_newres_b20c256_g5.json workspace/prod_60m/shards {out} --minibatch 512 --steps-per-epoch 500 --epochs 14 --validation-length 20000 --lr-schedule plateau --learning-rate 0.4 --warmup-steps 2000 --warmup-start-lr 0.0001 --plateau-patience 1000 --mixed-precision --seed 90001
+b20_512_lr0.8_w2000 AlphaGo.training.supervised_policy_trainer workspace/models/model_newres_b20c256_g5.json workspace/prod_60m/shards {out} --minibatch 512 --steps-per-epoch 500 --epochs 14 --validation-length 20000 --lr-schedule plateau --learning-rate 0.8 --warmup-steps 2000 --warmup-start-lr 0.0001 --plateau-patience 1000 --mixed-precision --seed 90001
+# Added after 0.8 beat 0.4 by ~0.02 training loss: is higher better still?
+b20_512_lr1.6_w2000 AlphaGo.training.supervised_policy_trainer workspace/models/model_newres_b20c256_g5.json workspace/prod_60m/shards {out} --minibatch 512 --steps-per-epoch 500 --epochs 14 --validation-length 20000 --lr-schedule plateau --learning-rate 1.6 --warmup-steps 2000 --warmup-start-lr 0.0001 --plateau-patience 1000 --mixed-precision --seed 90001
