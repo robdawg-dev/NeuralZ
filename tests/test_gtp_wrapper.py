@@ -275,7 +275,8 @@ def test_call_gnugo_without_gnugo_installed_returns_nothing(tmp_path):
     engine, _ = _engine()
     sgf = tmp_path / "g.sgf"
     sgf.write_text("(;GM[1]SZ[19])")
-    assert engine.call_gnugo(str(sgf), "final_score\n") == ""
+    # None, not "": no answer must not read as "no dead stones"
+    assert engine.call_gnugo(str(sgf), "final_score\n") is None
 
 
 @pytest.mark.parametrize("command,gnugo_command", [
@@ -322,7 +323,7 @@ def test_scoring_does_not_leave_temp_files(monkeypatch, gnugo_fails):
 
 
 def test_run_gnugo_without_gnugo_returns_nothing(tmp_path):
-    assert gtp_wrapper.run_gnugo(str(tmp_path / "g.sgf"), "final_score\n") == ""
+    assert gtp_wrapper.run_gnugo(str(tmp_path / "g.sgf"), "final_score\n") is None
 
 
 # --- run_gtp loop ----------------------------------------------------------------------

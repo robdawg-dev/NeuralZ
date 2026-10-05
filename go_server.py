@@ -12,6 +12,15 @@ Localhost-only HTTP (Python's standard library server):
                      flattened in C order and np.packbits'ed. Reply: the size*size move
                      probabilities as little-endian float32.
 
+With --katago, the server also runs one KataGo analysis engine (a CPU build and a small
+network) that judges finished games for every bot (interface/katago_scorer.py):
+
+    POST /final_status -> body: JSON {"stones": [[color, vertex], ...], "to_move", "komi",
+                          "rules"}. Reply: JSON {"dead": [vertex, ...], "score_lead"}.
+    POST /cleanup_move -> body: the same, with "to_move" the bot's color. Reply: JSON
+                          {"move": vertex or "pass"} - a pass only once none of the
+                          opponent's stones are dead (kgs-genmove_cleanup).
+
 Requests are answered by one inference thread that gathers whatever positions arrive
 within --batch-wait-ms (up to --max-batch) into a single model call: bots moving at the
 same moment share one batch instead of queueing for the model one at a time.
@@ -49,6 +58,7 @@ import numpy as np  # noqa: E402
 from AlphaGo.models.nn_util import NeuralNetBase  # noqa: E402
 from AlphaGo.training.shard_stream import (  # noqa: E402
     BATCH_TRANSFORMATIONS, symmetry_permutations)
+from interface.katago_scorer import KataGoScorer  # noqa: E402
 
 # The views averaged for each --symmetries choice: the position as given, the 4
 # rotations, or all 8 symmetries.
@@ -188,7 +198,9 @@ class BatchingPolicy(object):
                 request.done.set()
 
 
-def make_handler(policy):
+def make_handler(policy, scorer=None):
+    info = dict(policy.info, katago=scorer is not None)
+
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -204,11 +216,14 @@ def make_handler(policy):
 
         def do_GET(self):
             if self.path == "/info":
-                self._reply(200, json.dumps(policy.info).encode("utf-8"), "application/json")
+                self._reply(200, json.dumps(info).encode("utf-8"), "application/json")
             else:
                 self._error(404, "unknown path {}".format(self.path))
 
         def do_POST(self):
+            if self.path in ("/final_status", "/cleanup_move"):
+                self._judge()
+                return
             if self.path != "/policy":
                 self._error(404, "unknown path {}".format(self.path))
                 return
@@ -224,6 +239,27 @@ def make_handler(policy):
                 self._error(500, "inference failed: {}".format(e))
                 return
             self._reply(200, probs.tobytes(), "application/octet-stream")
+
+        def _judge(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            if scorer is None:
+                self._error(503, "this go_server runs without --katago")
+                return
+            try:
+                q = json.loads(body)
+                args = (q["stones"], q["to_move"], q["komi"], q.get("rules", "chinese"))
+            except (ValueError, KeyError, TypeError) as e:
+                self._error(400, "bad request: {}".format(e))
+                return
+            try:
+                if self.path == "/final_status":
+                    answer = scorer.final_status(*args)
+                else:
+                    answer = {"move": scorer.cleanup_move(*args)}
+            except Exception as e:  # noqa: BLE001
+                self._error(500, "katago failed: {}".format(e))
+                return
+            self._reply(200, json.dumps(answer).encode("utf-8"), "application/json")
 
         def log_message(self, fmt, *args):
             pass  # one line per move from every bot would drown the log
@@ -256,6 +292,17 @@ def build_parser():
     parser.add_argument("--eager", action="store_true",
                         help="Call the network as a plain eager Keras call instead of the "
                              "compiled functions (slower; for debugging or comparison)")
+    parser.add_argument("--katago", default=None, metavar="EXE",
+                        help="KataGo executable (a CPU build): also judge finished games for "
+                             "the bots - dead stones, cleanup moves. Default: off")
+    parser.add_argument("--katago-model", default=None,
+                        help="KataGo network for --katago (a small one, e.g. b10c128)")
+    parser.add_argument("--katago-config", default=None,
+                        help="KataGo analysis config for --katago. Default: "
+                             "katago_analysis.cfg next to go_server.py")
+    parser.add_argument("--katago-visits", type=int, default=1,
+                        help="KataGo visits per dead-stone query: 1 is the network alone, "
+                             "enough on finished positions. Default: 1")
     parser.add_argument("--threads", type=int, default=None,
                         help="CPU threads TensorFlow may use per model call. Default: "
                              "TensorFlow's own (all cores)")
@@ -272,7 +319,18 @@ def main(argv=None):
     policy = BatchingPolicy(args.model, args.weights, max_batch=args.max_batch,
                             batch_wait_ms=args.batch_wait_ms, symmetries=args.symmetries,
                             compiled=not args.eager)
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(policy))
+    scorer = None
+    if args.katago:
+        if not args.katago_model:
+            sys.exit("go_server: --katago needs --katago-model")
+        config = args.katago_config or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                    "katago_analysis.cfg")
+        try:
+            scorer = KataGoScorer(args.katago, args.katago_model, config,
+                                  visits=args.katago_visits)
+        except Exception as e:  # noqa: BLE001
+            sys.exit("go_server: KataGo failed to start: {}".format(e))
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(policy, scorer))
     sys.stderr.write("go_server: serving {} on http://{}:{} ({} planes, {}x{}, symmetries "
                      "{}, {}; ready in {:.0f} s)\n".format(
                          os.path.basename(args.model), args.host, args.port, policy.planes,
@@ -280,6 +338,11 @@ def main(argv=None):
                          "eager calls" if args.eager else "compiled for batches of {}".format(
                              "/".join(str(n) for n in sorted(policy._compiled))),
                          time.time() - started))
+    judging = "off (bots fall back to GNU Go)"
+    if scorer is not None:
+        judging = "by KataGo ({}, {} visit(s))".format(os.path.basename(args.katago_model),
+                                                      args.katago_visits)
+    sys.stderr.write("go_server: end-of-game judging {}\n".format(judging))
     sys.stderr.flush()
     try:
         server.serve_forever()
@@ -287,6 +350,8 @@ def main(argv=None):
         pass
     finally:
         server.server_close()
+        if scorer is not None:
+            scorer.close()
 
 
 if __name__ == "__main__":

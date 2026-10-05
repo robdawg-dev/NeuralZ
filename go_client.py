@@ -89,6 +89,24 @@ class RemotePolicy(object):
         distribution = distribution / distribution.sum()
         return list(zip(moves, distribution))
 
+    @property
+    def judges_games(self):
+        """Whether the server runs KataGo for the end of the game (go_server --katago)."""
+        return bool(self.info.get("katago"))
+
+    def _judge(self, path, stones, to_move, komi, rules):
+        body = json.dumps({"stones": stones, "to_move": to_move, "komi": komi,
+                           "rules": rules}).encode("utf-8")
+        return json.loads(self._request(path, body))
+
+    def final_status(self, stones, to_move, komi, rules):
+        """KataGo's dead stones for the position: {"dead": [vertex, ...], "score_lead"}."""
+        return self._judge("/final_status", stones, to_move, komi, rules)
+
+    def cleanup_move(self, stones, to_move, komi, rules):
+        """KataGo's kgs-genmove_cleanup move for to_move (the bot): a vertex, or "pass"."""
+        return self._judge("/cleanup_move", stones, to_move, komi, rules)["move"]
+
 
 def build_parser():
     parser = argparse.ArgumentParser(
@@ -115,6 +133,11 @@ def build_parser():
     parser.add_argument("--no-ladder-guard", dest="ladder_guard", action="store_false",
                         help="Let the bot extend groups in atari into ladders the engine reads "
                              "as dead (the guard is on by default)")
+    parser.add_argument("--cleanup", action="store_true",
+                        help="Support kgs-genmove_cleanup (needs go_server --katago): when the "
+                             "opponent disputes the dead stones in a non-Japanese-rules game, "
+                             "KGS lets play resume and the bot captures the stones KataGo "
+                             "judges dead before passing. Default: off")
     parser.add_argument("--max-moves", type=int, default=800,
                         help="Force a pass once this many moves have been played. Default: 800")
     parser.add_argument("--version", default="0.3",
@@ -132,7 +155,12 @@ def main(argv=None):
         policy, temperature=args.temperature, pass_when_offered=True,
         move_limit=args.max_moves, sample_ratio=args.sample_ratio,
         sample_moves=args.sample_moves, ladder_guard=args.ladder_guard)
-    run_gtp(player, name="NeuralZ", version=args.version)
+    scorer = policy if policy.judges_games else None
+    if scorer is None:
+        sys.stderr.write("go_client: go_server runs without --katago - dead stones from GNU Go"
+                         "{}\n".format("; --cleanup ignored" if args.cleanup else ""))
+    run_gtp(player, name="NeuralZ", version=args.version, scorer=scorer,
+            cleanup=args.cleanup and scorer is not None)
 
 
 if __name__ == "__main__":

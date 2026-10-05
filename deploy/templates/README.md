@@ -8,6 +8,10 @@ processes:
 - **`start_client.sh`** runs `go_client.py`, the GTP engine kgsGtp starts. It gets its
   probabilities from the server. Several bots can share one server.
 
+If this folder has a `katago/` subfolder (the Linux CPU build of KataGo and a small
+network), the server also runs KataGo to judge finished games for every bot: which stones
+are dead when KGS asks (`final_status_list`). GNU Go is then only the fallback.
+
 `VERSION` says which commit and model this folder was built from.
 
 ## One-time server setup
@@ -16,7 +20,7 @@ These need `sudo` and are not done by `install.sh`:
 
 ```bash
 sudo apt install build-essential   # C++ compiler for the game engine (required)
-sudo apt install gnugo             # optional: answers KGS's final_score / final_status_list
+sudo apt install gnugo             # recommended: fallback for KGS's dead stones if KataGo fails
 curl -LsSf https://astral.sh/uv/install.sh | sh   # uv, if not installed yet
 ```
 
@@ -50,6 +54,20 @@ In the kgsGtp config, set the engine to the client script (absolute path):
 ```
 engine=/path/to/this/folder/start_client.sh
 ```
+
+### End of the game
+
+KGS asks the bot which stones are dead (`final_status_list`). With `katago/` present the
+server answers from KataGo (~30 ms per position on a CPU, after ~4 s at startup); if
+KataGo is missing or fails, the client asks GNU Go; if neither answers, it returns an
+error and kgsGtp leaves the marking to the opponent. In **ranked** games the bot's list is
+binding: kgsGtp won't finish the game until the opponent accepts it.
+
+Optional: `start_client.sh --cleanup` also supports `kgs-genmove_cleanup`. When an
+opponent disputes the dead stones in a non-Japanese-rules game, KGS then lets play resume
+and the bot captures the stones KataGo judges dead before passing. Off by default.
+
+### Client options
 
 The client defaults are: sample among moves at least 0.5 as likely as the top move
 (`--sample-ratio 0.5`) for the bot's first 20 moves (`--sample-moves 20`), never while one

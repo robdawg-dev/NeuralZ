@@ -46,17 +46,38 @@ def _engine_to_gtp(point, size):
 
 
 def run_gnugo(sgf_file_name, command):
-    if shutil.which('gnugo'):
-        from subprocess import Popen, PIPE
-        p = Popen(['gnugo', '--chinese-rules', '--mode', 'gtp', '-l', sgf_file_name],
-                  stdout=PIPE, stdin=PIPE, stderr=PIPE)
-        out_bytes = p.communicate(input=command.encode('utf-8'))[0]
-        return out_bytes.decode('utf-8')[2:]
-    else:
-        return ''
+    """GNU Go's answer to one GTP command about the game in sgf_file_name, or None if GNU Go
+    isn't installed or answered with an error."""
+    if not shutil.which('gnugo'):
+        return None
+    from subprocess import Popen, PIPE
+    p = Popen(['gnugo', '--chinese-rules', '--mode', 'gtp', '-l', sgf_file_name],
+              stdout=PIPE, stdin=PIPE, stderr=PIPE)
+    out = p.communicate(input=command.encode('utf-8'))[0].decode('utf-8')
+    if not out.startswith('='):
+        return None
+    return out[2:].strip()
 
 
 class ExtendedGtpEngine(gtp.Engine):
+    """The bot's GTP engine. End of the game: final_status_list / final_score ask the scorer
+    first (KataGo behind go_server --katago, see interface/katago_scorer.py), then GNU Go,
+    and answer a GTP error if neither does - kgsGtp then leaves the dead stones to the
+    opponent, rather than reading an empty answer as "no dead stones". With cleanup (and a
+    scorer), kgs-genmove_cleanup is supported: KGS uses it when the opponent disputes the
+    dead stones in a non-Japanese game, and the bot captures the stones KataGo judges dead
+    before it passes."""
+
+    def __init__(self, game_obj, name="gtp (python library)", version="0.2", scorer=None,
+                 cleanup=False):
+        super(ExtendedGtpEngine, self).__init__(game_obj, name, version)
+        self._scorer = scorer
+        # GTP command names with a hyphen can't be method names: registered by hand
+        setattr(self, "cmd_kgs-rules", self._kgs_rules)
+        self.known_commands.append("kgs-rules")
+        if cleanup and scorer is not None:
+            setattr(self, "cmd_kgs-genmove_cleanup", self._kgs_genmove_cleanup)
+            self.known_commands.append("kgs-genmove_cleanup")
 
     recommended_handicaps = {
         2: "D4 Q16",
@@ -70,6 +91,7 @@ class ExtendedGtpEngine(gtp.Engine):
     }
 
     def call_gnugo(self, sgf_file_name, command):
+        """GNU Go's answer, or None if it isn't installed, errs or takes over 10 s."""
         try:
             pool = multiprocessing.Pool(processes=1)
             result = pool.apply_async(run_gnugo, (sgf_file_name, command))
@@ -78,8 +100,7 @@ class ExtendedGtpEngine(gtp.Engine):
             return output
         except multiprocessing.TimeoutError:
             pool.terminate()
-            # if can't get answer from GnuGo, return no result
-            return ''
+            return None
 
     def cmd_play(self, arguments):
         # Overrides gtp.Engine.cmd_play to record the move leniently - see
@@ -129,20 +150,78 @@ class ExtendedGtpEngine(gtp.Engine):
         finally:
             os.remove(sgf_file_name)
 
+    def _judged(self):
+        """The scorer's verdict on the current position, or None (no scorer, or it failed)."""
+        if self._scorer is None:
+            return None
+        try:
+            return self._scorer.final_status(**self._game.position())
+        except Exception as e:  # noqa: BLE001 - fall back to GNU Go
+            sys.stderr.write("gtp: KataGo scoring failed ({}); trying GNU Go\n".format(e))
+            sys.stderr.flush()
+            return None
+
     def cmd_final_score(self, arguments):
-        return self._ask_gnugo_about_current_game('final_score\n')
+        judged = self._judged()
+        if judged is not None:
+            lead = judged["score_lead"]
+            if abs(lead) < 0.25:
+                return "0"
+            return "{}+{:.1f}".format("B" if lead > 0 else "W", abs(lead))
+        answer = self._ask_gnugo_about_current_game('final_score\n')
+        if answer is None:
+            raise ValueError("cannot score: no KataGo, and GNU Go did not answer")
+        return answer
 
     def cmd_final_status_list(self, arguments):
-        return self._ask_gnugo_about_current_game('final_status_list {}\n'.format(arguments))
+        status = arguments.strip().lower()
+        if status not in ("dead", "alive", "seki"):
+            raise ValueError("final_status_list takes dead, alive or seki")
+        judged = self._judged()
+        if judged is not None:
+            if status == "seki":
+                return ""
+            dead = set(judged["dead"])
+            if status == "dead":
+                return " ".join(sorted(dead))
+            return " ".join(sorted(v for _c, v in self._game.position()["stones"]
+                                   if v not in dead))
+        answer = self._ask_gnugo_about_current_game('final_status_list {}\n'.format(status))
+        if answer is None:
+            raise ValueError("cannot judge dead stones: no KataGo, and GNU Go did not answer")
+        return answer
+
+    def _kgs_rules(self, arguments):
+        self._game.set_rules(arguments.strip().lower())
+
+    def _kgs_genmove_cleanup(self, arguments):
+        """Like genmove, but no pass while KataGo judges any of the opponent's stones dead:
+        its move if it can be played here; otherwise (KataGo failed, or a move this engine
+        rejects) the bot's own move, without passing just because the opponent did."""
+        color = gtp.parse_color(arguments)
+        if not color:
+            raise ValueError("unknown player: {}".format(arguments))
+        move = None
+        try:
+            vertex = self._scorer.cleanup_move(**self._game.position(color))
+            move = gtp.PASS if vertex.lower() == "pass" else gtp.parse_vertex(vertex)
+            if move is None or not self._game.make_move(color, move):
+                sys.stderr.write("gtp: unusable KataGo cleanup move {}\n".format(vertex))
+                move = None
+        except Exception as e:  # noqa: BLE001 - fall back to the bot's own move
+            sys.stderr.write("gtp: KataGo cleanup failed ({})\n".format(e))
+        if move is None:
+            move = self._game.get_move(color, pass_when_offered=False)
+            if not self._game.make_move(color, move):
+                raise ValueError("engine rejected its own move {}".format(gtp.gtp_vertex(move)))
+        sys.stderr.flush()
+        return gtp.gtp_vertex(move)
 
     def cmd_load_sgf(self, arguments):
         pass
 
     def cmd_save_sgf(self, arguments):
         pass
-
-    # def cmd_kgs_genmove_cleanup(self, arguments):
-    #     return self.cmd_genmove(arguments)
 
 
 class GTPGameConnector(object):
@@ -158,10 +237,9 @@ class GTPGameConnector(object):
         # ordinary 'play' moves, which the board can't tell apart from real ones. Resets
         # with the board; a controller that reconnects and replays a game restarts it.
         self._own_moves = {}
-        # Not currently read anywhere (final scoring goes through an external gnugo
-        # process via SGF export, not through GameState) - kept only so 'set_komi'
-        # has somewhere to write to, matching the previous (already unused) behavior.
+        # komi and the rules (kgs-rules) - read only when judging the finished game
         self._komi = 7.5
+        self._rules = "chinese"
 
     def clear(self):
         self._state = go.GameState(self._state.get_size(), enforce_superko=True)
@@ -195,9 +273,35 @@ class GTPGameConnector(object):
     def set_komi(self, k):
         self._komi = k
 
-    def get_move(self, color):
+    def set_rules(self, rules):
+        self._rules = rules
+
+    def position(self, to_move=None):
+        """The position for the scorer: {"stones": [[color, GTP vertex], ...], "to_move",
+        "komi", "rules"} - to_move a GTP color, default the side to move."""
+        size = self._state.get_size()
+        board = self._state.get_board()
+        stones = [["B" if board[x, y] == go.BLACK else "W",
+                   gtp.gtp_vertex(_engine_to_gtp((x, y), size))]
+                  for x in range(size) for y in range(size) if board[x, y] != go.EMPTY]
+        if to_move is None:
+            mover = "B" if self._state.get_current_player() == go.BLACK else "W"
+        else:
+            mover = "B" if to_move == gtp.BLACK else "W"
+        return {"stones": stones, "to_move": mover, "komi": self._komi, "rules": self._rules}
+
+    def get_move(self, color, pass_when_offered=None):
+        """The player's move for color. pass_when_offered=False overrides the player's own
+        "pass when the opponent just passed" for this move (cleanup must not pass early)."""
         self._state.set_current_player(_GTP_TO_GO_COLOR[color])
-        move = self._player.get_move(self._state, own_moves=self._own_moves.get(color, 0))
+        saved = getattr(self._player, "pass_when_offered", None)
+        if pass_when_offered is not None and saved is not None:
+            self._player.pass_when_offered = pass_when_offered
+        try:
+            move = self._player.get_move(self._state, own_moves=self._own_moves.get(color, 0))
+        finally:
+            if pass_when_offered is not None and saved is not None:
+                self._player.pass_when_offered = saved
         self._own_moves[color] = self._own_moves.get(color, 0) + 1
         if move == go.PASS:
             return gtp.PASS
@@ -219,9 +323,10 @@ class GTPGameConnector(object):
         self._state.place_handicaps([_gtp_to_engine(vertex, size) for vertex in vertices])
 
 
-def run_gtp(player_obj, inpt_fn=None, name="Gtp Player", version="0.0"):
+def run_gtp(player_obj, inpt_fn=None, name="Gtp Player", version="0.0", scorer=None,
+            cleanup=False):
     gtp_game = GTPGameConnector(player_obj)
-    gtp_engine = ExtendedGtpEngine(gtp_game, name, version)
+    gtp_engine = ExtendedGtpEngine(gtp_game, name, version, scorer=scorer, cleanup=cleanup)
     if inpt_fn is None:
         inpt_fn = input
 
