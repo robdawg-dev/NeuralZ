@@ -29,10 +29,10 @@ class RemotePolicy(object):
     go_server.py: the feature list comes from the server's /info, so the planes built here
     always match the served model."""
 
-    def __init__(self, server, timeout=30.0, retries=3, retry_wait=1.0):
+    def __init__(self, server, timeout=30.0, server_wait=120.0, retry_wait=1.0):
         self.server = server.rstrip("/")
         self.timeout = timeout
-        self.retries = retries
+        self.server_wait = server_wait
         self.retry_wait = retry_wait
         self.info = json.loads(self._request("/info"))
         self.board_size = self.info["board_size"]
@@ -43,9 +43,13 @@ class RemotePolicy(object):
                                      self.preprocessor.get_output_dimension()))
 
     def _request(self, path, body=None):
-        """GET (body None) or POST to the server, retrying connection failures a few times
-        - so a server restart doesn't cost a bot its game."""
-        for attempt in range(self.retries + 1):
+        """GET (body None) or POST to the server, retrying a refused or failed connection
+        for up to server_wait seconds - long enough for go_server to restart (TensorFlow
+        import, model load, compiling its calls) without costing a bot its game. A few
+        retries over ~6 s were not: the bot's process ended and kgsGtp left the game."""
+        deadline = time.monotonic() + self.server_wait
+        delay, warned = self.retry_wait, False
+        while True:
             try:
                 request = urllib.request.Request(
                     self.server + path, data=body,
@@ -56,10 +60,17 @@ class RemotePolicy(object):
                 raise RuntimeError("go_server {} -> {}: {}".format(
                     path, e.code, e.read().decode("utf-8", "replace"))) from e
             except (urllib.error.URLError, OSError) as e:
-                if attempt == self.retries:
-                    raise RuntimeError("go_server at {} unreachable: {}".format(
-                        self.server, e)) from e
-                time.sleep(self.retry_wait * (attempt + 1))
+                if time.monotonic() + delay > deadline:
+                    raise RuntimeError("go_server at {} unreachable (gave up after {:.0f} s): "
+                                       "{}".format(self.server, self.server_wait, e)) from e
+                if not warned:
+                    sys.stderr.write("go_client: go_server at {} unreachable ({}); retrying "
+                                     "for up to {:.0f} s\n".format(self.server, e,
+                                                                   self.server_wait))
+                    sys.stderr.flush()
+                    warned = True
+                time.sleep(delay)
+                delay = min(delay * 2, 5.0)
 
     def move_probabilities(self, state):
         """The served network's probabilities for every board point, (size * size,)."""
@@ -84,6 +95,10 @@ def build_parser():
         description="Run a GTP bot whose network is served by go_server.py.")
     parser.add_argument("--server", default="http://127.0.0.1:5005",
                         help="go_server.py's address. Default: http://127.0.0.1:5005")
+    parser.add_argument("--server-wait", type=float, default=120.0,
+                        help="Seconds to keep retrying while go_server is unreachable (e.g. "
+                             "restarting) before giving up. The bot's clock runs meanwhile. "
+                             "Default: 120")
     parser.add_argument("--timeout", type=float, default=30.0,
                         help="Seconds to wait for one move's probabilities. Default: 30")
     # The rest as in run_gtp_player.py - see there for the reasoning behind each default.
@@ -110,7 +125,7 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
-        policy = RemotePolicy(args.server, timeout=args.timeout)
+        policy = RemotePolicy(args.server, timeout=args.timeout, server_wait=args.server_wait)
     except (RuntimeError, ValueError) as e:
         sys.exit("go_client: {}".format(e))
     player = ProbabilisticPolicyPlayer(

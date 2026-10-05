@@ -6,6 +6,7 @@ os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -136,7 +137,30 @@ def test_player_plays_legal_moves_through_the_server(server):
 
 def test_unreachable_server_is_a_clear_error():
     with pytest.raises(RuntimeError, match="unreachable"):
-        go_client.RemotePolicy("http://127.0.0.1:1", timeout=1, retries=0)
+        go_client.RemotePolicy("http://127.0.0.1:1", timeout=1, server_wait=0)
+
+
+def test_client_waits_for_a_restarting_server(server):
+    """A server that is down when the client asks, and back a few seconds later (as during
+    a restart), costs the client a wait, not its game."""
+    import socket
+    _url, policy = server
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+
+    def start_later():
+        time.sleep(2.5)
+        httpd = ThreadingHTTPServer(("127.0.0.1", port), go_server.make_handler(policy))
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+    threading.Thread(target=start_later, daemon=True).start()
+    t0 = time.time()
+    remote = go_client.RemotePolicy("http://127.0.0.1:{}".format(port), timeout=5,
+                                    server_wait=20, retry_wait=0.5)
+    assert time.time() - t0 >= 2.0
+    assert remote.move_probabilities(GameState()).shape == (361,)
 
 
 def test_client_never_loads_tensorflow():
