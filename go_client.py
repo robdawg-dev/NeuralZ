@@ -97,6 +97,9 @@ def build_parser():
                         help="Sample for the bot's first N moves of each game (counted from its "
                              "first genmove, so handicap stones don't count), greedy after. "
                              "0: always greedy. Default: 20")
+    parser.add_argument("--no-ladder-guard", dest="ladder_guard", action="store_false",
+                        help="Let the bot extend groups in atari into ladders the engine reads "
+                             "as dead (the guard is on by default)")
     parser.add_argument("--max-moves", type=int, default=800,
                         help="Force a pass once this many moves have been played. Default: 800")
     parser.add_argument("--version", default="0.3",
@@ -113,7 +116,7 @@ def main(argv=None):
     player = ProbabilisticPolicyPlayer(
         policy, temperature=args.temperature, pass_when_offered=True,
         move_limit=args.max_moves, sample_ratio=args.sample_ratio,
-        sample_moves=args.sample_moves)
+        sample_moves=args.sample_moves, ladder_guard=args.ladder_guard)
     run_gtp(player, name="NeuralZ", version=args.version)
 
 
