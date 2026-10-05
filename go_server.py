@@ -22,6 +22,13 @@ and averages them - about +1 point of top-1 accuracy for b20c256 on held-out pos
 --symmetries 4 uses the 4 rotations - most of that gain (about +0.8) for about half the
 cost. The default, 1, evaluates the position as given. See SYMMETRY_AVERAGING_PLAN.md.
 
+The network is called through compiled TensorFlow functions, one per batch size: a batch
+is padded up to the next power of two (or --max-batch) positions, and every size is
+compiled at startup, so no move ever waits on a compile. On the CPU that is ~2.5-3x faster
+per position than an eager Keras call, which spends most of its time on per-layer overhead
+(workspace/profiling/results_dev_summary.md: 57-62 vs 143-173 ms at batch 1). --eager uses
+the plain Keras call instead.
+
 CPU-only, like run_gtp_player.py: the GPU is hidden before TensorFlow loads.
 """
 import os
@@ -34,6 +41,7 @@ import json  # noqa: E402
 import queue  # noqa: E402
 import sys  # noqa: E402
 import threading  # noqa: E402
+import time  # noqa: E402
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # noqa: E402
 
 import numpy as np  # noqa: E402
@@ -65,8 +73,8 @@ class _Request(object):
 class BatchingPolicy(object):
     """A loaded policy network behind a single inference thread that batches requests."""
 
-    def __init__(self, model_path, weights_path, max_batch=32, batch_wait_ms=2.0,
-                 symmetries=1):
+    def __init__(self, model_path, weights_path, max_batch=4, batch_wait_ms=2.0,
+                 symmetries=1, compiled=True):
         if symmetries not in SYMMETRY_CHOICES:
             raise ValueError("symmetries must be one of {}, got {}".format(
                 SYMMETRY_CHOICES, symmetries))
@@ -92,6 +100,7 @@ class BatchingPolicy(object):
         self.max_batch = max_batch
         self.batch_wait = batch_wait_ms / 1000.0
         self._queue = queue.Queue()
+        self._compiled = self._compile() if compiled else None
         # Warm up before serving: the first call builds the model's graph.
         self._run([np.zeros((self.board_size, self.board_size, self.planes), np.uint8)])
         threading.Thread(target=self._worker, name="inference", daemon=True).start()
@@ -113,23 +122,51 @@ class BatchingPolicy(object):
             raise request.error
         return request.probs
 
+    def _compile(self):
+        """A compiled model call for each batch size the worker can form - powers of two up
+        to max_batch positions, and max_batch itself, times the symmetry views - each traced
+        and run once now, so serving never waits on a compile."""
+        import tensorflow as tf
+        model = self.policy.model
+        sizes = {min(2 ** i, self.max_batch) for i in range(self.max_batch.bit_length() + 1)}
+        compiled = {}
+        for n in sorted(sizes):
+            spec = tf.TensorSpec((n * len(self.symmetries), self.board_size, self.board_size,
+                                  self.planes), tf.float32)
+            fn = tf.function(lambda views: model(views, training=False), input_signature=[spec])
+            fn(tf.zeros(spec.shape, tf.float32))
+            compiled[n] = fn
+        return compiled
+
+    def _forward(self, views, n):
+        """The network's output for views holding n positions' symmetry views."""
+        if self._compiled is not None and n in self._compiled:
+            return self._compiled[n](views).numpy()
+        return self.policy.forward(views)
+
     def _run(self, planes_list):
         """Probabilities for each position, (N, size * size) little-endian float32 -
         with several symmetries, the mean over them, each mapped back to the position's
         own orientation."""
         x = np.stack(planes_list)
-        if self.symmetries == ["noop"]:
-            return self.policy.forward(x.astype(np.float32)).astype("<f4")
         n = len(x)
+        if self._compiled is not None and n <= self.max_batch:
+            # pad up to the next compiled batch size; the padding rows' answers are dropped
+            size = min(s for s in self._compiled if s >= n)
+            if size > n:
+                x = np.concatenate([x, np.zeros((size - n,) + x.shape[1:], x.dtype)])
+        m = len(x)
+        if self.symmetries == ["noop"]:
+            return self._forward(x.astype(np.float32), m)[:n].astype("<f4")
         views = np.concatenate([BATCH_TRANSFORMATIONS[name](x) for name in self.symmetries])
-        probs = self.policy.forward(views.astype(np.float32))
-        mean = np.zeros((n, probs.shape[1]), np.float64)
+        probs = self._forward(views.astype(np.float32), m)
+        mean = np.zeros((m, probs.shape[1]), np.float64)
         original = np.empty_like(mean)
         for k, perm in enumerate(self._perms):
             # The transformed board's point j is the original's point perm[j].
-            original[:, perm] = probs[k * n:(k + 1) * n]
+            original[:, perm] = probs[k * m:(k + 1) * m]
             mean += original
-        return (mean / len(self.symmetries)).astype("<f4")
+        return (mean[:n] / len(self.symmetries)).astype("<f4")
 
     def _worker(self):
         while True:
@@ -206,13 +243,19 @@ def build_parser():
                              "averaged: 1 (the position as given), 4 (the 4 rotations) or 8 "
                              "(all rotations and reflections - the most accurate). More views "
                              "cost more time per move. Default: 1")
-    parser.add_argument("--max-batch", type=int, default=32,
+    parser.add_argument("--max-batch", type=int, default=4,
                         help="Most positions evaluated in one model call (with --symmetries "
-                             "4 or 8, the call holds that many inputs per position). Default: "
-                             "32")
-    parser.add_argument("--batch-wait-ms", type=float, default=2.0,
+                             "4 or 8, the call holds that many inputs per position); more "
+                             "requests at once wait for the next call. Each batch size up to "
+                             "this is compiled at startup (1, 2, 4, ...). A batch only forms "
+                             "when bots ask within --batch-wait-ms of each other, so a few "
+                             "suffice. Default: 4")
+    parser.add_argument("--batch-wait-ms", type=float, default=10.0,
                         help="How long the inference thread waits for more positions to join "
                              "a batch once one has arrived. Default: 2")
+    parser.add_argument("--eager", action="store_true",
+                        help="Call the network as a plain eager Keras call instead of the "
+                             "compiled functions (slower; for debugging or comparison)")
     parser.add_argument("--threads", type=int, default=None,
                         help="CPU threads TensorFlow may use per model call. Default: "
                              "TensorFlow's own (all cores)")
@@ -225,13 +268,18 @@ def main(argv=None):
         import tensorflow as tf
         tf.config.threading.set_intra_op_parallelism_threads(args.threads)
         tf.config.threading.set_inter_op_parallelism_threads(1)
+    started = time.time()
     policy = BatchingPolicy(args.model, args.weights, max_batch=args.max_batch,
-                            batch_wait_ms=args.batch_wait_ms, symmetries=args.symmetries)
+                            batch_wait_ms=args.batch_wait_ms, symmetries=args.symmetries,
+                            compiled=not args.eager)
     server = ThreadingHTTPServer((args.host, args.port), make_handler(policy))
     sys.stderr.write("go_server: serving {} on http://{}:{} ({} planes, {}x{}, symmetries "
-                     "{})\n".format(os.path.basename(args.model), args.host, args.port,
-                                    policy.planes, policy.board_size, policy.board_size,
-                                    len(policy.symmetries)))
+                     "{}, {}; ready in {:.0f} s)\n".format(
+                         os.path.basename(args.model), args.host, args.port, policy.planes,
+                         policy.board_size, policy.board_size, len(policy.symmetries),
+                         "eager calls" if args.eager else "compiled for batches of {}".format(
+                             "/".join(str(n) for n in sorted(policy._compiled))),
+                         time.time() - started))
     sys.stderr.flush()
     try:
         server.serve_forever()

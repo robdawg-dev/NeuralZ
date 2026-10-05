@@ -165,9 +165,11 @@ def _planes(policy, state):
 
 
 def test_one_symmetry_is_exactly_the_plain_network(server, model_files):
-    """--symmetries 1, the default, changes nothing."""
-    _url, policy = server
-    assert policy.symmetries == ["noop"] and policy.info["symmetries"] == 1
+    """--symmetries 1, the default, changes nothing (exactly so with eager calls; the
+    compiled calls are compared with them below)."""
+    _url, served = server
+    assert served.symmetries == ["noop"] and served.info["symmetries"] == 1
+    policy = go_server.BatchingPolicy(*model_files, compiled=False)
     local = CNNPolicy.load_model(model_files[0])
     local.model.load_weights(model_files[1])
     for state in _positions()[:4]:
@@ -239,3 +241,25 @@ def test_info_reports_the_symmetry_setting(symmetric_policy, rotation_policy):
 def test_unsupported_symmetry_counts_are_rejected(model_files):
     with pytest.raises(ValueError, match="symmetries"):
         go_server.BatchingPolicy(*model_files, symmetries=3)
+
+
+# --- compiled calls ----------------------------------------------------------------------
+
+@pytest.mark.parametrize("symmetries", [1, 8])
+@pytest.mark.parametrize("n_positions", [1, 3, 5])
+def test_compiled_calls_match_eager_ones(model_files, symmetries, n_positions):
+    """Compiled calls (batches padded up to a compiled size) answer as the plain Keras
+    call does, position by position."""
+    compiled = go_server.BatchingPolicy(*model_files, max_batch=8, symmetries=symmetries)
+    eager = go_server.BatchingPolicy(*model_files, max_batch=8, symmetries=symmetries,
+                                     compiled=False)
+    planes = [_planes(compiled, s) for s in _positions()[:n_positions]]
+    got, want = compiled._run(planes), eager._run(planes)
+    assert got.shape == want.shape == (n_positions, 361) and got.dtype == np.dtype("<f4")
+    np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-7)
+
+
+def test_every_batch_size_up_to_max_batch_has_a_compiled_call(model_files):
+    policy = go_server.BatchingPolicy(*model_files, max_batch=12)
+    assert sorted(policy._compiled) == [1, 2, 4, 8, 12]
+
