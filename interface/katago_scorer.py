@@ -111,12 +111,17 @@ class KataGoScorer(object):
 
     def final_status(self, stones, to_move, komi, rules, timeout=None):
         """stones: [[color, vertex], ...] on the board. -> {"dead": [vertex, ...],
-        "score_lead": Black's estimated lead}."""
+        "score_lead": Black's estimated lead, "contested": points whose owner is still open
+        (0.3 <= |ownership| < 0.9) - 0-2 on finished boards, 12-275 in mid-game (measured on
+        212 KGS games, workspace/samples2/contested_dist.py); dame and seki read near 0, so
+        they count as settled}."""
         reply = self._query(self._position(stones, to_move, komi, rules, self.visits), timeout)
         own = reply["ownership"]  # + = Black's point
         dead = [v.upper() for c, v in stones
                 if (own[vertex_index(v, self.size)] < 0) == (c.upper() == "B")]
-        return {"dead": dead, "score_lead": reply["rootInfo"]["scoreLead"]}
+        contested = sum(1 for o in own if 0.3 <= abs(o) < 0.9)
+        return {"dead": dead, "score_lead": reply["rootInfo"]["scoreLead"],
+                "contested": contested}
 
     def cleanup_move(self, stones, color, komi, rules):
         """For color's kgs-genmove_cleanup: "pass" once none of the opponent's stones are

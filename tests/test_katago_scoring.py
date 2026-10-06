@@ -16,7 +16,8 @@ from tests.test_go_server_client import model_files  # noqa: F401 - pytest fixtu
 
 # A stand-in for `katago analysis`: Black owns every point (so every White stone is dead),
 # komi 99 -> an error reply, komi 77 -> no reply at all; with avoidMoves, two move infos
-# with the pass first (which must be skipped).
+# with the pass first (which must be skipped). Ownership is +1 everywhere (a settled board),
+# or 0.5 everywhere at komi 55 (every point contested).
 FAKE_KATAGO = textwrap.dedent('''
     import json, sys
     for line in sys.stdin:
@@ -27,8 +28,8 @@ FAKE_KATAGO = textwrap.dedent('''
             print(json.dumps({"id": q["id"], "error": "boom"}), flush=True)
             continue
         n = q["boardXSize"] * q["boardYSize"]
-        reply = {"id": q["id"], "ownership": [1.0] * n, "rootInfo": {"scoreLead": 12.5},
-                 "query": q}
+        reply = {"id": q["id"], "ownership": [0.5 if q["komi"] == 55 else 1.0] * n,
+                 "rootInfo": {"scoreLead": 12.5}, "query": q}
         if "avoidMoves" in q:
             reply["moveInfos"] = [{"move": "pass", "order": 0}, {"move": "A1", "order": 1}]
         print(json.dumps(reply), flush=True)
@@ -65,6 +66,11 @@ def test_dead_stones_are_those_owned_by_the_other_color(scorer):
     verdict = scorer.final_status(STONES, "B", 0.5, "chinese")
     assert sorted(verdict["dead"]) == ["Q16", "Q17"]
     assert verdict["score_lead"] == 12.5
+
+
+def test_contested_counts_points_whose_owner_is_open(scorer):
+    assert scorer.final_status(STONES, "B", 0.5, "chinese")["contested"] == 0
+    assert scorer.final_status(STONES, "B", 55, "chinese")["contested"] == 361
 
 
 def test_cleanup_captures_before_passing(scorer):
@@ -134,25 +140,27 @@ def test_server_without_katago_says_so(judging_server):
 class FixedPlayer(object):
     """Plays (1, 1) in engine coordinates (GTP B18); records pass_when_offered per call."""
 
-    def __init__(self):
+    def __init__(self, move=(1, 1)):
         self.pass_when_offered = True
         self.seen = []
+        self.move = move
 
     def get_move(self, state, own_moves=None):
         self.seen.append(self.pass_when_offered)
-        return (1, 1)
+        return self.move
 
 
 class FakeScorer(object):
-    def __init__(self, dead=("Q16",), cleanup="D4", fail=False):
+    def __init__(self, dead=("Q16",), cleanup="D4", fail=False, contested=0):
         self.dead, self.cleanup, self.fail = list(dead), cleanup, fail
+        self.contested = contested
         self.asked = []
 
     def final_status(self, stones, to_move, komi, rules):
         self.asked.append((stones, to_move, komi, rules))
         if self.fail:
             raise RuntimeError("katago down")
-        return {"dead": self.dead, "score_lead": -6.5}
+        return {"dead": self.dead, "score_lead": -6.5, "contested": self.contested}
 
     def cleanup_move(self, stones, to_move, komi, rules):
         if self.fail:
@@ -220,3 +228,45 @@ def test_cleanup_falls_back_to_the_bots_move_without_passing_on_offer():
     e2 = engine(FakeScorer(fail=True), cleanup=True, player=FixedPlayer())
     e2.send("play b A1")
     assert e2.send("kgs-genmove_cleanup w").strip() == "= B18"
+
+
+# --- passing back only on a finished board ---------------------------------------------
+
+COLUMNS = "ABCDEFGHJKLMNOPQRST"
+
+
+def _long_game(e, opponent_passes=True):
+    """101+ moves without contact (Black on rows 19-17, White on rows 9-7), ending with
+    Black's pass - where the player's own rule would pass back."""
+    for i in range(50):
+        col = COLUMNS[i % 19]
+        assert e.send("play b {}{}".format(col, 19 - i // 19)).startswith("=")
+        assert e.send("play w {}{}".format(col, 9 - i // 19)).startswith("=")
+    assert e.send("play b {}".format("pass" if opponent_passes else "T1")).startswith("=")
+
+
+@pytest.mark.parametrize("contested,seen", [(150, [False]), (11, [False]), (10, [True]),
+                                            (0, [True])])
+def test_bot_passes_back_only_on_a_settled_board(contested, seen):
+    player = FixedPlayer(move=(10, 9))  # K10: empty in _long_game
+    sc = FakeScorer(contested=contested)
+    e = ExtendedGtpEngine(GTPGameConnector(player), scorer=sc)
+    _long_game(e)
+    assert e.send("genmove w").startswith("=")
+    assert player.seen == seen and player.pass_when_offered is True
+    assert sc.asked[-1][1] == "W"
+
+
+def test_pass_check_only_after_an_opponents_pass_and_falls_back_without_katago():
+    player = FixedPlayer(move=(10, 9))
+    sc = FakeScorer(contested=150)
+    e = ExtendedGtpEngine(GTPGameConnector(player), scorer=sc)
+    _long_game(e, opponent_passes=False)
+    e.send("genmove w")
+    assert sc.asked == [] and player.seen == [True]
+    for scorer in (None, FakeScorer(fail=True)):
+        player = FixedPlayer(move=(10, 9))
+        e = ExtendedGtpEngine(GTPGameConnector(player), scorer=scorer)
+        _long_game(e)
+        e.send("genmove w")
+        assert player.seen == [True]   # the player's own rule decides

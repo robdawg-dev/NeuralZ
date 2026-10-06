@@ -30,6 +30,12 @@ def _log_gtp_command(cmd):
 _GTP_TO_GO_COLOR = {gtp.BLACK: go.BLACK, gtp.WHITE: go.WHITE}
 _GO_TO_GTP_COLOR = {go.BLACK: gtp.BLACK, go.WHITE: gtp.WHITE}
 
+# Most contested points (KataGo ownership still open) at which the bot passes back after the
+# opponent's pass. Measured on 212 KGS games: finished boards 0-2 (median 0), mid-game
+# positions 12-275 - so 10 lets no mid-game position end, and stopped exactly the games that
+# ended on an unsettled board (171-211).
+SETTLED_MAX_CONTESTED = 10
+
 
 # GTP vertices are 1-indexed with row 1 at the BOTTOM of the board. GameState uses SGF's
 # orientation, the one all training data is read in: 0-indexed with y=0 the TOP row (SGF
@@ -127,10 +133,28 @@ class ExtendedGtpEngine(gtp.Engine):
         color = gtp.parse_color(arguments)
         if not color:
             raise ValueError("unknown player: {}".format(arguments))
-        move = self._game.get_move(color)
+        move = self._game.get_move(color, pass_when_offered=self._pass_allowed(color))
         if not self._game.make_move(color, move):
             raise ValueError("engine rejected its own move {}".format(gtp.gtp_vertex(move)))
         return gtp.gtp_vertex(move)
+
+    def _pass_allowed(self, color):
+        """When the opponent has just passed and the player would pass back, may it? With a
+        scorer: only if the board is settled - at most SETTLED_MAX_CONTESTED points whose
+        owner KataGo still sees as open. Otherwise the game would end on an unfinished board,
+        judged as it stands (opponents passing right after move 100 got results off by up to
+        ~90 points that way). None leaves the player's own rule; False makes it play on,
+        asking again at the next pass."""
+        if self._scorer is None or not self._game.opponent_just_passed():
+            return None
+        try:
+            verdict = self._scorer.final_status(**self._game.position(color))
+        except Exception as e:  # noqa: BLE001 - fall back to the player's own rule
+            sys.stderr.write("gtp: KataGo pass check failed ({})\n".format(e))
+            sys.stderr.flush()
+            return None
+        settled = verdict.get("contested", 0) <= SETTLED_MAX_CONTESTED
+        return None if settled else False
 
     def cmd_time_left(self, arguments):
         pass
@@ -328,6 +352,12 @@ class GTPGameConnector(object):
         if self._own_moves.get(color, 0) > 0:
             self._own_moves[color] -= 1
         return True
+
+    def opponent_just_passed(self):
+        """The last move was a pass, after move 100 - when the player's pass_when_offered
+        rule would pass back."""
+        history = self._state.get_history()
+        return len(history) > 100 and history[-1] == go.PASS
 
     def position(self, to_move=None):
         """The position for the scorer: {"stones": [[color, GTP vertex], ...], "to_move",
