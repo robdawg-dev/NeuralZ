@@ -28,6 +28,7 @@ def _log_gtp_command(cmd):
 # BLACK/WHITE values, so GTP-supplied colors must be translated before they reach
 # GameState.do_move()/set_current_player().
 _GTP_TO_GO_COLOR = {gtp.BLACK: go.BLACK, gtp.WHITE: go.WHITE}
+_GO_TO_GTP_COLOR = {go.BLACK: gtp.BLACK, go.WHITE: gtp.WHITE}
 
 
 # GTP vertices are 1-indexed with row 1 at the BOTTOM of the board. GameState uses SGF's
@@ -66,15 +67,22 @@ class ExtendedGtpEngine(gtp.Engine):
     opponent, rather than reading an empty answer as "no dead stones". With cleanup (and a
     scorer), kgs-genmove_cleanup is supported: KGS uses it when the opponent disputes the
     dead stones in a non-Japanese game, and the bot captures the stones KataGo judges dead
-    before it passes."""
+    before it passes.
+
+    stop_file: while this file exists, new games are declined (kgsGtp checks each challenge
+    with boardsize) and the engine exits when a game ends (kgs-game_over) - so a deployment
+    can let every bot finish its game and stop, instead of killing it mid-game."""
 
     def __init__(self, game_obj, name="gtp (python library)", version="0.2", scorer=None,
-                 cleanup=False):
+                 cleanup=False, stop_file=None):
         super(ExtendedGtpEngine, self).__init__(game_obj, name, version)
         self._scorer = scorer
+        self._stop_file = stop_file
         # GTP command names with a hyphen can't be method names: registered by hand
         setattr(self, "cmd_kgs-rules", self._kgs_rules)
         self.known_commands.append("kgs-rules")
+        setattr(self, "cmd_kgs-game_over", self._kgs_game_over)
+        self.known_commands.append("kgs-game_over")
         if cleanup and scorer is not None:
             setattr(self, "cmd_kgs-genmove_cleanup", self._kgs_genmove_cleanup)
             self.known_commands.append("kgs-genmove_cleanup")
@@ -126,6 +134,27 @@ class ExtendedGtpEngine(gtp.Engine):
 
     def cmd_time_left(self, arguments):
         pass
+
+    def _stopping(self):
+        return self._stop_file is not None and os.path.exists(self._stop_file)
+
+    def cmd_boardsize(self, arguments):
+        # kgsGtp sends boardsize for every challenge: an error declines it
+        if self._stopping():
+            raise ValueError("not accepting games: {} exists".format(self._stop_file))
+        return super(ExtendedGtpEngine, self).cmd_boardsize(arguments)
+
+    def _kgs_game_over(self, arguments):
+        if self._stopping():
+            sys.stderr.write("gtp: game over and {} exists - exiting\n".format(self._stop_file))
+            sys.stderr.flush()
+            self.disconnect = True
+
+    def cmd_undo(self, arguments):
+        # Without undo, kgsGtp replays the game after a clear_board - which would also
+        # restart the bot's sampling window (replayed moves aren't genmoves)
+        if not self._game.undo():
+            raise ValueError("cannot undo")
 
     def cmd_place_free_handicap(self, arguments):
         try:
@@ -192,7 +221,9 @@ class ExtendedGtpEngine(gtp.Engine):
         return answer
 
     def _kgs_rules(self, arguments):
-        self._game.set_rules(arguments.strip().lower())
+        # "kgs-rules japanese" - KGS may add parameters after the rules in future
+        words = arguments.split()
+        self._game.set_rules(words[0].lower() if words else "chinese")
 
     def _kgs_genmove_cleanup(self, arguments):
         """Like genmove, but no pass while KataGo judges any of the opponent's stones dead:
@@ -276,6 +307,28 @@ class GTPGameConnector(object):
     def set_rules(self, rules):
         self._rules = rules
 
+    def undo(self):
+        """Take back the last move: the board is rebuilt from scratch - handicap stones, then
+        every move but the last, in order - so captures, ko and superko come out exactly as
+        when the game was played (GameState has no way to reverse a move). If the move was
+        the bot's own (a color it was asked to genmove), its own-move count goes down too,
+        keeping the sampling window at sample_moves bot moves per game. False if there is
+        no move to take back."""
+        handicaps = self._state.get_handicaps()
+        history = self._state.get_history_with_colors()[len(handicaps):]
+        if not history:
+            return False
+        state = go.GameState(self._state.get_size(), enforce_superko=True)
+        if handicaps:
+            state.place_handicaps(handicaps)
+        for move, color in history[:-1]:
+            state.record_move(move, color)
+        self._state = state
+        color = _GO_TO_GTP_COLOR[history[-1][1]]
+        if self._own_moves.get(color, 0) > 0:
+            self._own_moves[color] -= 1
+        return True
+
     def position(self, to_move=None):
         """The position for the scorer: {"stones": [[color, GTP vertex], ...], "to_move",
         "komi", "rules"} - to_move a GTP color, default the side to move."""
@@ -324,9 +377,10 @@ class GTPGameConnector(object):
 
 
 def run_gtp(player_obj, inpt_fn=None, name="Gtp Player", version="0.0", scorer=None,
-            cleanup=False):
+            cleanup=False, stop_file=None):
     gtp_game = GTPGameConnector(player_obj)
-    gtp_engine = ExtendedGtpEngine(gtp_game, name, version, scorer=scorer, cleanup=cleanup)
+    gtp_engine = ExtendedGtpEngine(gtp_game, name, version, scorer=scorer, cleanup=cleanup,
+                                   stop_file=stop_file)
     if inpt_fn is None:
         inpt_fn = input
 

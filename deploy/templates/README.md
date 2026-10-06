@@ -75,8 +75,22 @@ of its own stones is in atari, then always the top move. `--sample-moves 0` make
 greedy. Options go after the script name; options use hyphens, e.g. `--sample-moves=20`,
 not `--sample_moves=20`. See `.venv/bin/python go_client.py --help`.
 
+## Stopping the bots cleanly
+
+While a file named `STOP` exists in this folder (`touch STOP`), every bot declines new
+challenges and exits as soon as its current game ends - no game is abandoned. An idle bot
+just stops taking games and can be stopped any time. Remove the file (`rm STOP`) before
+starting the bots again: while it exists they accept no games. (`go_client.py
+--stop-file PATH` uses another file.)
+
 ## Update
 
-Build a new folder on the development machine (`python deploy/build_deploy.py`), copy it
-over this one (keeping the same path, so the kgsGtp config still points at it), and run
-`./install.sh` again. Then restart the server; kgsGtp starts new clients by itself.
+1. `touch STOP` and wait until every bot's kgsGtp has exited (or is idle).
+2. Build a new folder on the development machine (`python deploy/build_deploy.py`), copy
+   it over this one (keeping the same path, so the kgsGtp configs still point at it), and
+   run `./install.sh` again.
+3. Restart the server (`start_server.sh`).
+4. `rm STOP`, then start each bot's kgsGtp again.
+
+Clients wait up to 2 minutes for a restarting server (`--server-wait`), so the server
+alone can also be restarted while bots are playing - their clocks keep running meanwhile.

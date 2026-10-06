@@ -366,3 +366,62 @@ def test_own_moves_resets_with_the_board(command):
     engine.send(command)
     engine.send("genmove black")
     assert player.own_moves == [0, 0]
+
+
+# --- undo, kgs-rules, stop file ------------------------------------------------------------
+
+def test_undo_restores_captured_stones():
+    engine, game = _engine()
+    # White A2 in atari from B1 / B2's neighbours; Black A3 captures it
+    for cmd in ["play white A2", "play black B2", "play white A1", "play black B1",
+                "play black A3"]:
+        assert engine.send(cmd) == _ok()
+    board = game._state.get_board()
+    assert board[0, 17] == go.EMPTY and board[0, 18] == go.EMPTY  # A2, A1 captured
+    assert engine.send("undo") == _ok()
+    board = game._state.get_board()
+    assert board[0, 17] == go.WHITE and board[0, 18] == go.WHITE and board[0, 16] == go.EMPTY
+    assert len(game._state.get_history()) == 4
+
+
+def test_undo_keeps_handicap_stones_and_refuses_on_an_empty_game():
+    engine, game = _engine()
+    assert engine.send("undo").startswith("? cannot undo")
+    engine.send("set_free_handicap D4 Q16")
+    assert engine.send("undo").startswith("? cannot undo")  # only handicap stones
+    engine.send("play white K10")
+    assert engine.send("undo") == _ok()
+    assert game._state.get_handicaps() == [(3, 15), (15, 3)]
+    assert len(game._state.get_history()) == 2
+
+
+def test_undo_of_the_bots_move_keeps_the_sampling_count():
+    player = ScriptedPlayer([(3, 3), (4, 4), (5, 5)])
+    engine, _ = _engine(player)
+    engine.send("play black K10")
+    engine.send("genmove white")      # own move 0
+    engine.send("play black C3")
+    engine.send("undo")               # black's move: the bot's count stays 1
+    engine.send("undo")               # the bot's move: back to 0
+    engine.send("genmove white")
+    engine.send("play black C3")
+    engine.send("genmove white")
+    assert player.own_moves == [0, 0, 1]
+
+
+def test_kgs_rules_reads_only_the_first_word():
+    engine, game = _engine()
+    assert engine.send("kgs-rules japanese some future parameter") == _ok()
+    assert game.position()["rules"] == "japanese"
+
+
+def test_stop_file_declines_games_and_exits_after_the_game(tmp_path):
+    stop = tmp_path / "STOP"
+    game = GTPGameConnector(ScriptedPlayer())
+    engine = ExtendedGtpEngine(game, "Test", "1", stop_file=str(stop))
+    assert "kgs-game_over" in engine.send("list_commands")
+    assert engine.send("boardsize 19") == _ok()
+    assert engine.send("kgs-game_over") == _ok() and not engine.disconnect
+    stop.write_text("")
+    assert engine.send("boardsize 19").startswith("? not accepting games")
+    assert engine.send("kgs-game_over") == _ok() and engine.disconnect

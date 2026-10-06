@@ -11,6 +11,7 @@ asks the server for the move probabilities.
 """
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -138,6 +139,11 @@ def build_parser():
                              "opponent disputes the dead stones in a non-Japanese-rules game, "
                              "KGS lets play resume and the bot captures the stones KataGo "
                              "judges dead before passing. Default: off")
+    parser.add_argument("--stop-file", default=os.path.join(
+                            os.path.dirname(os.path.abspath(__file__)), "STOP"),
+                        help="While this file exists the bot declines new games and exits when "
+                             "its game ends - create it before a deployment, remove it after. "
+                             "Default: STOP next to go_client.py")
     parser.add_argument("--max-moves", type=int, default=800,
                         help="Force a pass once this many moves have been played. Default: 800")
     parser.add_argument("--version", default="0.3",
@@ -160,7 +166,7 @@ def main(argv=None):
         sys.stderr.write("go_client: go_server runs without --katago - dead stones from GNU Go"
                          "{}\n".format("; --cleanup ignored" if args.cleanup else ""))
     run_gtp(player, name="NeuralZ", version=args.version, scorer=scorer,
-            cleanup=args.cleanup and scorer is not None)
+            cleanup=args.cleanup and scorer is not None, stop_file=args.stop_file)
 
 
 if __name__ == "__main__":
