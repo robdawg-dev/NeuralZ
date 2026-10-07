@@ -39,3 +39,4 @@ play_tests/sgf/
 
 # deploy/build_deploy.py output
 /dist/
+older_scripts/
