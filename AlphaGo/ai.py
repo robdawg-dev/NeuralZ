@@ -45,22 +45,31 @@ class ProbabilisticPolicyPlayer(object):
        sample_ratio limits sampling to the close calls: only moves at least sample_ratio
        times as likely as the most likely one (None: every move). Where one move is
        clearly preferred it is the only candidate, so the move is effectively greedy and
-       variation only enters where the network itself sees a close call. Measured on
-       b20c256 (workspace/sample_ratio/): ratio 0.5 for the first 20 own moves took a
-       human's repeated opening line away by ply 30-40 in every game, and scored 49.75%
-       (+/-2.5) against its own greedy self over 400 games.
+       variation only enters where the network itself sees a close call. On b20c256,
+       ratio 0.5 for the first 20 own moves costs 1.6 points of agreement with KataGo's
+       move, took a human's repeated opening line away by ply 30-40, and won 58.5% of 400
+       games against its own greedy self - no cost in strength (MEASUREMENTS.md,
+       "Sampling in the opening").
 
        Moves are never sampled while one of the player's own stones is in atari: there a
        "close call" can be the first step of running a ladder the network rates nearly
        as highly as giving the stone up (spring vs NeuralZ01, 2026-10-02: W hn at 22% vs
        the greedy 25% started a failed ladder that lost the game).
 
+       With ladder_guard (default), the player never extends one of its groups in atari
+       into a ladder it cannot escape: such moves are dropped before choosing, judged by
+       the engine's ladder reader (the ladder_escape feature, read up to 50 moves deep).
+       The network gets that feature as an input plane and still ran dead ladders across
+       the board - 15-19 extensions at 3-8 points each in spring's wins of 2026-10-02/03/05.
+
        By manipulating the 'temperature', sampled moves can be pushed towards totally
        random (high temperature) or towards greedy play (low temperature)
     """
 
+    _ladder_reader = None
+
     def __init__(self, policy_function, temperature=1.0, pass_when_offered=False,
-                 move_limit=None, sample_ratio=None, sample_moves=None):
+                 move_limit=None, sample_ratio=None, sample_moves=None, ladder_guard=True):
         assert temperature > 0.0
         assert sample_ratio is None or 0.0 < sample_ratio <= 1.0
         self.policy = policy_function
@@ -69,6 +78,7 @@ class ProbabilisticPolicyPlayer(object):
         self.pass_when_offered = pass_when_offered
         self.sample_ratio = sample_ratio
         self.sample_moves = sample_moves
+        self.ladder_guard = ladder_guard
 
     def _close_candidates(self, move_probs):
         """The moves at least sample_ratio times as likely as the most likely one."""
@@ -117,6 +127,28 @@ class ProbabilisticPolicyPlayer(object):
         own = state.get_board() == state.get_current_player()
         return bool((own & (state.get_liberty() == 1)).any())
 
+    @classmethod
+    def _failed_ladder_extensions(cls, state):
+        """Moves that extend one of the player to move's groups in atari (play at its last
+        liberty) where the engine's ladder reader finds no escape - running a dead ladder.
+        Empty when no group is in atari (nearly always), so the reader rarely runs."""
+        color = state.get_current_player()
+        board = state.get_board()
+        in_atari = (board == color) & (state.get_liberty() == 1)
+        if not in_atari.any():
+            return set()
+        n = board.shape[0]
+        extensions = set()
+        for x, y in zip(*np.nonzero(in_atari)):
+            for a, b in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                if 0 <= a < n and 0 <= b < n and board[a, b] == go.EMPTY:
+                    extensions.add((int(a), int(b)))
+        if cls._ladder_reader is None:
+            from AlphaGo.preprocessing.preprocessing import Preprocess
+            cls._ladder_reader = Preprocess(["ladder_escape"], size=n)
+        escapes = cls._ladder_reader.state_to_tensor(state)[0, :, :, 0]
+        return {m for m in extensions if not escapes[m]}
+
     def _in_sampling_window(self, state, own_moves):
         if self.sample_moves is None:
             return True
@@ -143,6 +175,11 @@ class ProbabilisticPolicyPlayer(object):
         if len(sensible_moves) > 0:
 
             move_probs = self.policy.eval_state(state, sensible_moves)
+
+            if self.ladder_guard:
+                dead = self._failed_ladder_extensions(state)
+                # only ever drops moves; if every sensible move ran a dead ladder, keep them
+                move_probs = [(m, p) for m, p in move_probs if m not in dead] or move_probs
 
             if self._in_sampling_window(state, own_moves) and not self._has_stone_in_atari(state):
                 # probabilistic, among the close calls

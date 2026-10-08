@@ -24,5 +24,9 @@ echo "== compiling the game engine"
     exit 1
 }
 
+if [ -f katago/katago ]; then
+    chmod +x katago/katago   # copies (e.g. from Windows) can drop the execute bit
+fi
+
 echo "== checking the bot"
 .venv/bin/python check_deploy.py

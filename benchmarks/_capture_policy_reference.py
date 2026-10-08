@@ -1,6 +1,6 @@
 """Capture a policy network's raw outputs on a fixed set of positions, or compare them with a
 previously captured reference - to check that an environment change (Python, TF, Keras, CUDA,
-Docker image) leaves a trained model's behaviour unchanged. See TF_UPGRADE_PLAN.md.
+Docker image) leaves a trained model's behaviour unchanged.
 
 Positions: fixed plies from the first games of each type in a selection list (test split, so
 the model never trained on them), including handicap games.
@@ -22,7 +22,7 @@ def _parse_args():
     parser.add_argument("weights", help=".weights.h5 file matching the model")
     parser.add_argument("reference", help=".npz to write (capture) or read (compare)")
     parser.add_argument("--device", choices=["cpu", "gpu"], default="cpu",
-                        help="cpu: as run_gtp_player.py runs the bot. Default: cpu")
+                        help="cpu: as go_server.py runs the bot. Default: cpu")
     parser.add_argument("--selection", default="workspace/prod_40m/selection/test.txt",
                         help="select_games list to take games from (path<TAB>moves<TAB>gtype)")
     parser.add_argument("--games-per-type", type=int, nargs=2, default=[6, 2],
@@ -61,7 +61,7 @@ def _positions(games, plies):
 
 def main():
     args = _parse_args()
-    # before TensorFlow is imported, exactly as run_gtp_player.py does for the bot
+    # before TensorFlow is imported, exactly as go_server.py does for the bot
     if args.device == "cpu":
         os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     import numpy as np

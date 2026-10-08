@@ -8,6 +8,10 @@ processes:
 - **`start_client.sh`** runs `go_client.py`, the GTP engine kgsGtp starts. It gets its
   probabilities from the server. Several bots can share one server.
 
+If this folder has a `katago/` subfolder (the Linux CPU build of KataGo and a small
+network), the server also runs KataGo to judge finished games for every bot: which stones
+are dead when KGS asks (`final_status_list`). GNU Go is then only the fallback.
+
 `VERSION` says which commit and model this folder was built from.
 
 ## One-time server setup
@@ -16,7 +20,7 @@ These need `sudo` and are not done by `install.sh`:
 
 ```bash
 sudo apt install build-essential   # C++ compiler for the game engine (required)
-sudo apt install gnugo             # optional: answers KGS's final_score / final_status_list
+sudo apt install gnugo             # recommended: fallback for KGS's dead stones if KataGo fails
 curl -LsSf https://astral.sh/uv/install.sh | sh   # uv, if not installed yet
 ```
 
@@ -51,14 +55,50 @@ In the kgsGtp config, set the engine to the client script (absolute path):
 engine=/path/to/this/folder/start_client.sh
 ```
 
+### End of the game
+
+KGS asks the bot which stones are dead (`final_status_list`). With `katago/` present the
+server answers from KataGo (~30 ms per position on a CPU, after ~4 s at startup); if
+KataGo is missing or fails, the client asks GNU Go; if neither answers, it returns an
+error and kgsGtp leaves the marking to the opponent. In **ranked** games the bot's list is
+binding: kgsGtp won't finish the game until the opponent accepts it. In **free** games it
+is not, and the opponent's marking stands: in early October 2026, five free games the bot
+was winning on the board were scored as losses this way.
+
+Optional: `start_client.sh --cleanup` also supports `kgs-genmove_cleanup`. When an
+opponent disputes the dead stones in a non-Japanese-rules game, KGS then lets play resume
+and the bot captures the stones KataGo judges dead before passing. Off by default.
+
+### Client options
+
 The client defaults are: sample among moves at least 0.5 as likely as the top move
 (`--sample-ratio 0.5`) for the bot's first 20 moves (`--sample-moves 20`), never while one
 of its own stones is in atari, then always the top move. `--sample-moves 0` makes it fully
 greedy. Options go after the script name; options use hyphens, e.g. `--sample-moves=20`,
 not `--sample_moves=20`. See `.venv/bin/python go_client.py --help`.
 
+To see afterwards exactly what kgsGtp asked and what the bot answered (moves, dead-stone
+lists, scores), give each bot its own `--gtp-log`, e.g.
+`engine=/path/to/this/folder/start_client.sh --gtp-log /path/to/this/folder/logs/NeuralZ05.log`
+(create `logs/` first). Each command and reply is one timestamped line - about 400 lines
+per game - appended for as long as the bot runs.
+
+## Stopping the bots cleanly
+
+While a file named `STOP` exists in this folder (`touch STOP`), every bot declines new
+challenges and exits as soon as its current game ends - no game is abandoned. An idle bot
+just stops taking games and can be stopped any time. Remove the file (`rm STOP`) before
+starting the bots again: while it exists they accept no games. (`go_client.py
+--stop-file PATH` uses another file.)
+
 ## Update
 
-Build a new folder on the development machine (`python deploy/build_deploy.py`), copy it
-over this one (keeping the same path, so the kgsGtp config still points at it), and run
-`./install.sh` again. Then restart the server; kgsGtp starts new clients by itself.
+1. `touch STOP` and wait until every bot's kgsGtp has exited (or is idle).
+2. Build a new folder on the development machine (`python deploy/build_deploy.py`), copy
+   it over this one (keeping the same path, so the kgsGtp configs still point at it), and
+   run `./install.sh` again.
+3. Restart the server (`start_server.sh`).
+4. `rm STOP`, then start each bot's kgsGtp again.
+
+Clients wait up to 2 minutes for a restarting server (`--server-wait`), so the server
+alone can also be restarted while bots are playing - their clocks keep running meanwhile.

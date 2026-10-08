@@ -1,7 +1,7 @@
 # Sample run: train the b15c192 policy network and play it
 
 This walks you from a fresh clone to a trained Go policy network you can play against over
-GTP, by reproducing the run that produced the project's current bot:
+GTP, by reproducing the run that produced the project's b15c192 bot (about 4d on KGS):
 `_restower_b15c192_v4shuf40m_mb1024_lr1p6_seed90001`.
 
 **What you end up with:** a ResNet policy network (15 residual blocks, 192 filters, about
@@ -109,9 +109,13 @@ This should print a list with one `PhysicalDevice(... device_type='GPU')`. If it
 docker compose run --rm -e CUDA_VISIBLE_DEVICES= gpu python -m pytest tests -q
 ```
 
-**Optionally, a local environment** for your editor and `flake8`: `uv sync` creates `.venv`
-with the same packages, on Python 3.13. The Cython engine is only built inside Docker, so
-run training and the tests there.
+**Optionally, a local environment** for your editor, `flake8` and CPU-only work (the tests,
+playing the bot): `uv sync --extra gtp` creates `.venv` with the same packages, on Python
+3.13. Build the engine for it as well with `uv run python setup_cython.py build_ext
+--inplace`, which needs a C++ compiler (`build-essential` on Linux, the Visual Studio Build
+Tools on Windows). On Windows its build (`.pyd`) sits next to the container's (`.so`), so
+the two don't interfere; on Linux they share file names, so rebuild whenever you switch
+between them. TensorFlow has no GPU support on native Windows, so train in Docker.
 
 From here on, `docker compose run --rm gpu <command>` runs a command inside the container,
 with the repository at `/workspace` (the working directory) and your training data at
@@ -345,19 +349,24 @@ learning rate is set to it and held there for as long as the file exists.
 
 ## 7. Play it over GTP
 
-**Pick a checkpoint.** The project's bot uses `weights.00094.weights.h5`. `metadata.json`
+**Pick a checkpoint.** The project's b15c192 bot uses `weights.00094.weights.h5`. `metadata.json`
 lists `"best_epoch": 94`, but that's a 0-based index, so it means `weights.00095`. The two
 are practically tied: 00095 has a hair lower validation loss, 00094 a little higher
 accuracy.
 
 **The bot runs on the CPU**, so it doesn't need the GPU and can run next to a training job.
-Try it by typing GTP commands:
+It is two programs: `go_server.py` loads the network and serves move probabilities, and
+`go_client.py` is the GTP engine, which asks the server for them. Try it by starting both in
+one container and typing GTP commands:
 
 ```bash
-docker compose run --rm -T gpu python run_gtp_player.py \
+docker compose run --rm -T gpu bash -c "python go_server.py \
     workspace/models/model_restower_b15c192_convnorm.json \
-    workspace/runs/restower_b15c192/weights.00094.weights.h5
+    workspace/runs/restower_b15c192/weights.00094.weights.h5 & python go_client.py"
 ```
+
+The client waits for the server to finish loading (up to `--server-wait`, 120 s by
+default), so the first reply takes a little while:
 
 ```
 name
@@ -370,8 +379,11 @@ genmove black
 = Q16
 ```
 
-Your move may differ: the bot deliberately samples its first moves. `-T` keeps Docker from attaching a terminal, so GTP's plain text passes through unchanged;
-that's also what a GUI needs. Useful options:
+Your move may differ: the bot deliberately samples its first moves. `-T` keeps Docker from
+attaching a terminal, so GTP's plain text passes through unchanged; that's also what a GUI
+needs. Both programs log to stderr only, so stdout carries nothing but GTP.
+
+Useful `go_client.py` options (put them after `python go_client.py`):
 - `--sample-moves 20`: how many of the bot's own moves are sampled rather than always the
   top choice (0 for always the top choice);
 - `--sample-ratio 0.5`: sampling only chooses among moves at least this fraction as likely
@@ -379,17 +391,23 @@ that's also what a GUI needs. Useful options:
 - `--temperature 1.0`: how evenly the sampled moves are chosen among those candidates;
 - `--max-moves 800`.
 
-See `python run_gtp_player.py --help`.
+`go_server.py` options go before the `&`, e.g. `--symmetries 4` averages over the four
+board rotations (a little stronger, about twice the CPU). See `python go_client.py --help`
+and `python go_server.py --help`.
 
 **In a GUI** such as [Sabaki](https://sabaki.yichuanshen.de/) or GoGui, add an engine with:
 - the engine program `docker`;
-- the arguments `compose run --rm -T gpu python run_gtp_player.py
+- the arguments `compose run --rm -T gpu bash -c "python go_server.py
   workspace/models/model_restower_b15c192_convnorm.json
-  workspace/runs/restower_b15c192/weights.00094.weights.h5`;
+  workspace/runs/restower_b15c192/weights.00094.weights.h5 & python go_client.py"`;
 - the repository folder as the working directory.
 
-**On KGS**, run the same command through KGS's `kgsGtp` client, which connects any GTP
-engine to the server as a bot account. See the kgsGtp documentation for its configuration.
+**On KGS**, build a deploy bundle instead. Copy the model JSON and the chosen weights into
+a folder of their own under `play_tests/models/`, e.g. `play_tests/models/b15c192/`, then
+run `python deploy/build_deploy.py --model b15c192`. It assembles `dist/neuralz-bot/`:
+the server, the client and install scripts for an Ubuntu server, plus KataGo for
+end-of-game judging if `play_tests/models/katago/` holds its Linux CPU build and a small
+network. The bundle's README covers installing it and the `kgsGtp` setup.
 
 ---
 
@@ -447,9 +465,8 @@ were built with different feature lists. Recreate the model with
 `--features-from workspace/prod_40m/shards`.
 
 **`... has no packed_states - a shard from before positions were stored bit-packed`.**
-Shards built by an older version of this repo. Convert them in place, keeping their
-position order:
-`docker compose run --rm gpu python -m AlphaGo.preprocessing.repack_shards <shards directory>`.
+Shards built by an older version of this repo. Rebuild them with `convert_shuffled`
+([step 4](#4-build-the-training-data)).
 
 **Paths like `/data` turn into `C:/Program Files/Git/data` (Git Bash).** Prefix the
 command with `MSYS_NO_PATHCONV=1`.

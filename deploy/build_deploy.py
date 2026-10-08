@@ -43,9 +43,13 @@ RUNTIME_FILES = [
     "AlphaGo/training/shard_stream.py",
     "interface/__init__.py",
     "interface/gtp_wrapper.py",
+    "interface/katago_scorer.py",
 ]
 TEMPLATE_FILES = ["README.md", "install.sh", "check_deploy.py", "start_server.sh",
-                  "start_client.sh"]
+                  "start_client.sh", "katago_analysis.cfg"]
+# KataGo for end-of-game judging (go_server --katago): its Linux CPU (Eigen) binary and a
+# small network, copied into the bundle's katago/ when present (git-ignored, like models)
+KATAGO_DIR = os.path.join(REPO, "play_tests", "models", "katago")
 EXECUTABLE = {"install.sh", "start_server.sh", "start_client.sh"}
 
 # Runtime packages only, at the versions the repo's uv.lock uses (the trained models and
@@ -132,6 +136,10 @@ def main():
                    help="Directory name under play_tests/models/. Default: b20c256")
     p.add_argument("--weights", default=None,
                    help="Weights file in that directory, if it holds more than one")
+    p.add_argument("--katago-dir", default=KATAGO_DIR,
+                   help="Folder with KataGo's Linux binary ('katago') and one network "
+                        "(*.bin.gz / *.txt.gz) for end-of-game judging. Default: "
+                        "play_tests/models/katago; built without KataGo if missing")
     p.add_argument("--out", default=os.path.join(REPO, "dist", "neuralz-bot"),
                    help="Output folder, replaced if it exists. Default: dist/neuralz-bot")
     args = p.parse_args()
@@ -157,8 +165,22 @@ def main():
     shutil.copy2(model_json, os.path.join(out, "models"))
     shutil.copy2(weights_path, os.path.join(out, "models"))
 
+    katago_net = None
+    katago_bin = os.path.join(args.katago_dir, "katago")
+    nets = sorted(glob.glob(os.path.join(args.katago_dir, "*.bin.gz")) +
+                  glob.glob(os.path.join(args.katago_dir, "*.txt.gz")))
+    if os.path.isfile(katago_bin) and len(nets) == 1:
+        os.makedirs(os.path.join(out, "katago"))
+        shutil.copy2(katago_bin, os.path.join(out, "katago", "katago"))
+        shutil.copy2(nets[0], os.path.join(out, "katago"))
+        katago_net = os.path.basename(nets[0])
+    else:
+        print("build_deploy: WARNING - no KataGo binary + single network in {}: built without "
+              "end-of-game judging (bots fall back to GNU Go)".format(args.katago_dir))
+
     subs = {"@MODEL_JSON@": "models/" + os.path.basename(model_json),
-            "@WEIGHTS@": "models/" + os.path.basename(weights_path)}
+            "@WEIGHTS@": "models/" + os.path.basename(weights_path),
+            "@KATAGO_MODEL@": "katago/" + katago_net if katago_net else ""}
     for name in TEMPLATE_FILES:
         with open(os.path.join(TEMPLATES, name), encoding="utf-8") as f:
             text = f.read()
@@ -177,6 +199,7 @@ def main():
         f.write("3.13\n")
     with open(os.path.join(out, "VERSION"), "w", encoding="utf-8", newline="\n") as f:
         f.write(version_text(args.model, model_json, weights_path))
+        f.write("katago: {}\n".format(katago_net or "none (GNU Go fallback only)"))
 
     print("locking dependencies...")
     subprocess.run(["uv", "lock", "--quiet"], cwd=out, check=True)

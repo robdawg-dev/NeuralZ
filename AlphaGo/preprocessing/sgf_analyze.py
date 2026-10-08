@@ -64,8 +64,7 @@ KataGo game provenance (gtype, in the root node comment)
 
 Positions seeded from a prior position (sgfpos/fork/hintpos/...) arrive as AB/AW setup
 stones with their real move order discarded, which is what makes the move-recency
-features (turns_since, last_moves) unreliable for the first few plies of such games - see
-AUDIT_NOTES.md.
+features (turns_since, last_moves) unreliable for the first few plies of such games.
 """
 import argparse
 import collections
@@ -99,8 +98,8 @@ _RE_MOVE = re.compile(r";([BW])\[([^\]]*)\]")
 _RE_ANNOT = re.compile(
     r"C\[\s*(-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) v=(\d+)(?: rv=(\d+))?(?: weight=([\d.]+))?")
 # A node that opens with ';' but carries neither a B nor a W property. sgf_iter_states
-# replays the PREVIOUS move on such a node (see AUDIT_NOTES.md), truncating or dropping
-# the game, so it is worth counting even though KataGo does not currently emit any.
+# skips one that is pure annotation but stops the game at one that alters the board
+# (AB/AW/AE/PL), so it is worth counting even though KataGo does not currently emit any.
 _RE_NODE = re.compile(r";([A-Z]{1,2})\[")
 
 # Ruleset strings look like "koSITUATIONALscoreTERRITORYtaxSEKIsui1button1".

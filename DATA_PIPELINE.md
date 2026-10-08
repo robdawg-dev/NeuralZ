@@ -4,7 +4,6 @@ How KataGo selfplay SGFs become training shards, what each stage decides, and th
 measurements behind those decisions.
 
 Supersedes `SGF_FILTER_POLICY.md` and `NEXT_STEPS.md`, which described an earlier design.
-`AUDIT_NOTES.md` and `CONVERSATION_LOG.md` are kept as history and are not maintained.
 
 ---
 
@@ -297,8 +296,9 @@ imply.
   throughput or a retrain from scratch. Currently left alone.
 - **A fair comparison between networks.** The only sound way is to evaluate both on the
   same held-out positions, e.g. this set's `test/` split, which neither was trained on.
-- **Two-pass endings.** `run_gtp_player.py` records 0 of 50 matches reaching a clean
-  two-pass end, leaving dead stones uncaptured. A play-path problem, not a data one.
+- **Two-pass endings.** Resolved on the play side, not the data side: with a 300-move cap,
+  0 of 50 matches reached a clean two-pass end, leaving dead stones uncaptured; the bots'
+  and `match_networks.py`'s 800-move default reached 100 of 100.
 - **Bit-packed planes end to end.** The GPU needs floats only at the first convolution.
   Keeping planes packed to the GPU would cut the validation array from 4.2GB to ~130MB and
   the per-batch transfer from 71MB to 2.2MB. Unlikely to matter for speed; not measured.

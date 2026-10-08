@@ -84,7 +84,9 @@ class TestProbabilisticPolicyPlayer(unittest.TestCase):
         state.do_move((0, 1), go.BLACK)
         state.do_move((0, 0), go.WHITE)
         state.set_current_player(go.WHITE)
-        player = ProbabilisticPolicyPlayer(Fixed(), sample_ratio=0.5)
+        # (extending at (1, 0) runs a dead ladder along the edge: the ladder guard, tested
+        # separately, would refuse it - off here to test the no-sampling rule alone)
+        player = ProbabilisticPolicyPlayer(Fixed(), sample_ratio=0.5, ladder_guard=False)
         np.random.seed(0)
         self.assertEqual({player.get_move(state) for _ in range(30)}, {(1, 0)})
 
@@ -146,6 +148,60 @@ class TestScoreLookaheadPlayer(unittest.TestCase):
         moves = {player.get_move(GameState()) for _ in range(30)}
         self.assertEqual(moves, {(3, 3), (15, 15)})
         self.assertEqual(net.value_calls, [])
+
+
+def _ladder(breaker=None):
+    """White (5, 5) in atari at (5, 6) from Black (4, 5) (5, 4) (6, 5) (6, 6): extending
+    runs a ladder toward the lower-right edge, which a White stone on its path breaks."""
+    state = GameState()
+    for b in [(4, 5), (5, 4), (6, 5), (6, 6)]:
+        state.do_move(b, go.BLACK)
+    if breaker:
+        state.do_move(breaker, go.WHITE)
+    state.do_move((5, 5), go.WHITE)
+    state.set_current_player(go.WHITE)
+    return state
+
+
+class PrefersExtension(object):
+    def eval_state(self, state, moves=None):
+        return [((5, 6), 0.6), ((15, 15), 0.3), ((3, 3), 0.1)]
+
+
+class TestLadderGuard(unittest.TestCase):
+
+    def test_dead_ladder_extension_is_found(self):
+        self.assertEqual(ProbabilisticPolicyPlayer._failed_ladder_extensions(_ladder()),
+                         {(5, 6)})
+
+    def test_working_ladder_escape_is_not_flagged(self):
+        self.assertEqual(
+            ProbabilisticPolicyPlayer._failed_ladder_extensions(_ladder(breaker=(3, 8))), set())
+
+    def test_nothing_flagged_without_a_group_in_atari(self):
+        state = GameState()
+        state.do_move((3, 3))
+        self.assertEqual(ProbabilisticPolicyPlayer._failed_ladder_extensions(state), set())
+
+    def test_guard_skips_the_dead_ladder(self):
+        player = ProbabilisticPolicyPlayer(PrefersExtension(), sample_moves=0)
+        self.assertEqual(player.get_move(_ladder()), (15, 15))
+
+    def test_guard_lets_a_working_ladder_run(self):
+        player = ProbabilisticPolicyPlayer(PrefersExtension(), sample_moves=0)
+        self.assertEqual(player.get_move(_ladder(breaker=(3, 8))), (5, 6))
+
+    def test_guard_can_be_turned_off(self):
+        player = ProbabilisticPolicyPlayer(PrefersExtension(), sample_moves=0, ladder_guard=False)
+        self.assertEqual(player.get_move(_ladder()), (5, 6))
+
+    def test_guard_applies_inside_the_sampling_window(self):
+        class Close(object):
+            def eval_state(self, state, moves=None):
+                return [((5, 6), 0.5), ((15, 15), 0.45), ((3, 3), 0.05)]
+        player = ProbabilisticPolicyPlayer(Close(), sample_ratio=0.5, sample_moves=None)
+        np.random.seed(0)
+        self.assertNotIn((5, 6), {player.get_move(_ladder()) for _ in range(30)})
 
 
 if __name__ == '__main__':

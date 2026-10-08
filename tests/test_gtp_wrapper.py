@@ -5,6 +5,9 @@ Tests marked xfail pin the intended behavior of known bugs, to be decided and fi
 separately.
 """
 import os
+import subprocess
+import sys
+import time
 
 import gtp
 import pytest
@@ -62,6 +65,14 @@ def test_boardsize_resizes_the_game():
     assert game._state.get_size() == 9
 
 
+def test_a_bot_declines_boards_its_network_cannot_play():
+    game = GTPGameConnector(ScriptedPlayer())
+    engine = ExtendedGtpEngine(game, "Test", "1", board_size=19)
+    assert engine.send("boardsize 9") == _err("unacceptable size: this bot plays 19x19 only")
+    assert game._state.get_size() == 19
+    assert engine.send("boardsize 19") == _ok()
+
+
 def test_clear_board_empties_the_game_and_keeps_its_size():
     engine, game = _engine()
     engine.send("boardsize 13")
@@ -77,10 +88,17 @@ def test_komi_is_recorded():
     assert game._komi == 6.5
 
 
-@pytest.mark.parametrize("command", ["time_left B 60 0", "load_sgf x.sgf", "save_sgf x.sgf"])
-def test_accepted_no_op_commands(command):
+def test_time_left_is_accepted_and_ignored():
     engine, _ = _engine()
-    assert engine.send(command) == _ok()
+    assert engine.send("time_left B 60 0") == _ok()
+
+
+@pytest.mark.parametrize("command", ["load_sgf", "save_sgf"])
+def test_sgf_commands_are_not_claimed(command):
+    # not implemented, so neither advertised nor answered with a success that did nothing
+    engine, _ = _engine()
+    assert command not in engine.send("list_commands")
+    assert engine.send(command + " x.sgf") == _err("unknown command")
 
 
 # --- play / genmove --------------------------------------------------------------------
@@ -263,6 +281,14 @@ def test_place_free_handicap_rejects_bad_counts(arg, message):
     assert game._state.get_history() == []
 
 
+def test_place_free_handicap_only_knows_19x19_points():
+    engine, game = _engine()
+    engine.send("boardsize 9")
+    assert engine.send("place_free_handicap 2") == _err(
+        "Free handicap placement is only known for 19x19")
+    assert game._state.get_handicaps() == []
+
+
 def test_set_free_handicap_places_the_given_stones():
     engine, game = _engine()
     assert engine.send("set_free_handicap C3 R17 K10") == _ok()
@@ -275,7 +301,8 @@ def test_call_gnugo_without_gnugo_installed_returns_nothing(tmp_path):
     engine, _ = _engine()
     sgf = tmp_path / "g.sgf"
     sgf.write_text("(;GM[1]SZ[19])")
-    assert engine.call_gnugo(str(sgf), "final_score\n") == ""
+    # None, not "": no answer must not read as "no dead stones"
+    assert engine.call_gnugo(str(sgf), "final_score\n") is None
 
 
 @pytest.mark.parametrize("command,gnugo_command", [
@@ -322,10 +349,33 @@ def test_scoring_does_not_leave_temp_files(monkeypatch, gnugo_fails):
 
 
 def test_run_gnugo_without_gnugo_returns_nothing(tmp_path):
-    assert gtp_wrapper.run_gnugo(str(tmp_path / "g.sgf"), "final_score\n") == ""
+    assert gtp_wrapper.run_gnugo(str(tmp_path / "g.sgf"), "final_score\n") is None
+
+
+def test_run_gnugo_gives_up_on_a_hung_gnugo(monkeypatch, tmp_path):
+    hung = [sys.executable, "-c", "import time; time.sleep(60)"]
+    popen = subprocess.Popen
+    monkeypatch.setattr(gtp_wrapper.shutil, "which", lambda name: name)
+    monkeypatch.setattr(gtp_wrapper.subprocess, "Popen", lambda cmd, **kw: popen(hung, **kw))
+    started = time.monotonic()
+    assert gtp_wrapper.run_gnugo(str(tmp_path / "g.sgf"), "final_score\n", timeout=1) is None
+    assert time.monotonic() - started < 10
 
 
 # --- run_gtp loop ----------------------------------------------------------------------
+
+def test_run_gtp_ends_quietly_when_input_closes(capsys):
+    lines = iter(["1 name"])
+
+    def read():
+        try:
+            return next(lines)
+        except StopIteration:
+            raise EOFError
+
+    run_gtp(ScriptedPlayer(), inpt_fn=read, name="Loop", version="3")
+    assert capsys.readouterr().out == "=1 Loop\n\n"
+
 
 def test_run_gtp_answers_each_command_until_quit(capsys):
     lines = iter(["1 name\n2 boardsize 9\n3 play black C3", "4 genmove white", "5 quit",
@@ -335,6 +385,26 @@ def test_run_gtp_answers_each_command_until_quit(capsys):
     assert out == "=1 Loop\n\n=2\n\n=3\n\n=4 G3\n\n=5\n\n"
     assert "GTP engine ready" in err
     assert next(lines) == "never read"
+
+
+def test_gtp_log_records_each_command_and_reply(tmp_path, capsys):
+    log = tmp_path / "bot.log"
+    lines = iter(["1 name\n2 genmove black", "3 quit"])
+    run_gtp(ScriptedPlayer([(6, 6)]), inpt_fn=lambda: next(lines), name="Loop", version="3",
+            log_path=str(log))
+    entries = [line.split(" ", 2)[2] for line in log.read_text(encoding="utf-8").splitlines()]
+    assert entries == ["> '1 name'", "< '=1 Loop'", "> '2 genmove black'", "< '=2 G13'",
+                       "> '3 quit'", "< '=3'"]
+    assert capsys.readouterr().out == "=1 Loop\n\n=2 G13\n\n=3\n\n"  # play is unchanged
+
+
+def test_an_unwritable_gtp_log_never_stops_the_bot(tmp_path, capsys):
+    lines = iter(["1 name", "2 quit"])
+    run_gtp(ScriptedPlayer(), inpt_fn=lambda: next(lines), name="Loop", version="3",
+            log_path=str(tmp_path / "missing_dir" / "bot.log"))
+    out, err = capsys.readouterr()
+    assert out == "=1 Loop\n\n=2\n\n"
+    assert err.count("gtp log: cannot write") == 1  # reported once, not per line
 
 
 # --- the player's own move count ------------------------------------------------------
@@ -365,3 +435,62 @@ def test_own_moves_resets_with_the_board(command):
     engine.send(command)
     engine.send("genmove black")
     assert player.own_moves == [0, 0]
+
+
+# --- undo, kgs-rules, stop file ------------------------------------------------------------
+
+def test_undo_restores_captured_stones():
+    engine, game = _engine()
+    # White A2 in atari from B1 / B2's neighbours; Black A3 captures it
+    for cmd in ["play white A2", "play black B2", "play white A1", "play black B1",
+                "play black A3"]:
+        assert engine.send(cmd) == _ok()
+    board = game._state.get_board()
+    assert board[0, 17] == go.EMPTY and board[0, 18] == go.EMPTY  # A2, A1 captured
+    assert engine.send("undo") == _ok()
+    board = game._state.get_board()
+    assert board[0, 17] == go.WHITE and board[0, 18] == go.WHITE and board[0, 16] == go.EMPTY
+    assert len(game._state.get_history()) == 4
+
+
+def test_undo_keeps_handicap_stones_and_refuses_on_an_empty_game():
+    engine, game = _engine()
+    assert engine.send("undo").startswith("? cannot undo")
+    engine.send("set_free_handicap D4 Q16")
+    assert engine.send("undo").startswith("? cannot undo")  # only handicap stones
+    engine.send("play white K10")
+    assert engine.send("undo") == _ok()
+    assert game._state.get_handicaps() == [(3, 15), (15, 3)]
+    assert len(game._state.get_history()) == 2
+
+
+def test_undo_of_the_bots_move_keeps_the_sampling_count():
+    player = ScriptedPlayer([(3, 3), (4, 4), (5, 5)])
+    engine, _ = _engine(player)
+    engine.send("play black K10")
+    engine.send("genmove white")      # own move 0
+    engine.send("play black C3")
+    engine.send("undo")               # black's move: the bot's count stays 1
+    engine.send("undo")               # the bot's move: back to 0
+    engine.send("genmove white")
+    engine.send("play black C3")
+    engine.send("genmove white")
+    assert player.own_moves == [0, 0, 1]
+
+
+def test_kgs_rules_reads_only_the_first_word():
+    engine, game = _engine()
+    assert engine.send("kgs-rules japanese some future parameter") == _ok()
+    assert game.position()["rules"] == "japanese"
+
+
+def test_stop_file_declines_games_and_exits_after_the_game(tmp_path):
+    stop = tmp_path / "STOP"
+    game = GTPGameConnector(ScriptedPlayer())
+    engine = ExtendedGtpEngine(game, "Test", "1", stop_file=str(stop))
+    assert "kgs-game_over" in engine.send("list_commands")
+    assert engine.send("boardsize 19") == _ok()
+    assert engine.send("kgs-game_over") == _ok() and not engine.disconnect
+    stop.write_text("")
+    assert engine.send("boardsize 19").startswith("? not accepting games")
+    assert engine.send("kgs-game_over") == _ok() and engine.disconnect

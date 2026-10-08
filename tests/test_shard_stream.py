@@ -164,8 +164,8 @@ def test_dataset_info_rejects_mismatched_shards(tmp_path):
         ss.dataset_info(paths)
 
 
-def test_dataset_info_points_old_format_shards_to_the_repacker(tmp_path):
-    with pytest.raises(ValueError, match="repack_shards"):
+def test_dataset_info_points_old_format_shards_to_a_rebuild(tmp_path):
+    with pytest.raises(ValueError, match="convert_shuffled"):
         ss.dataset_info([_shard(tmp_path / "old.h5", "board", packed=False)])
 
 
