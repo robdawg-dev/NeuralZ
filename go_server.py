@@ -37,10 +37,10 @@ The network is called through compiled TensorFlow functions, one per batch size:
 is padded up to the next power of two (or --max-batch) positions, and every size is
 compiled at startup, so no move ever waits on a compile. On the CPU that is ~2.5-3x faster
 per position than an eager Keras call, which spends most of its time on per-layer overhead
-(workspace/profiling/results_dev_summary.md: 57-62 vs 143-173 ms at batch 1). --eager uses
-the plain Keras call instead.
+(57-62 vs 143-173 ms at batch 1; MEASUREMENTS.md, "Inference speed"). --eager uses the
+plain Keras call instead.
 
-CPU-only, like run_gtp_player.py: the GPU is hidden before TensorFlow loads.
+CPU-only: the GPU is hidden before TensorFlow loads.
 """
 import os
 

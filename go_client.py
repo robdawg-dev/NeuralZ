@@ -4,10 +4,9 @@ it never imports TensorFlow or Keras.
 
     python go_client.py [--server http://127.0.0.1:5005] [--temperature ...]
 
-Plays exactly as run_gtp_player.py does - same options, same GTP layer
-(interface.gtp_wrapper), same game state and move choice (AlphaGo.ai) - except that
-RemotePolicy stands in for the network: it builds the position's feature planes here and
-asks the server for the move probabilities.
+The GTP layer is interface.gtp_wrapper and the game state and move choice AlphaGo.ai, as
+in play_tests/match_networks.py; RemotePolicy stands in for the network: it builds the
+position's feature planes here and asks the server for the move probabilities.
 """
 import argparse
 import json
@@ -120,7 +119,8 @@ def build_parser():
                              "Default: 120")
     parser.add_argument("--timeout", type=float, default=30.0,
                         help="Seconds to wait for one move's probabilities. Default: 30")
-    # The rest as in run_gtp_player.py - see there for the reasoning behind each default.
+    # Move choice: see ProbabilisticPolicyPlayer (AlphaGo/ai.py) for what each default is
+    # based on.
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="Temperature for sampled moves - lower leans harder toward the "
                              "top candidate. Default: 1.0")

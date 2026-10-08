@@ -94,7 +94,7 @@ def main():
                         help="Temperature for the sampled moves. Default: 1.0")
     parser.add_argument("--sample-ratio", type=float, default=0.5,
                         help="Sample only among moves at least this fraction as likely as the "
-                             "top move (see run_gtp_player.py). Default: 0.5")
+                             "top move (see ProbabilisticPolicyPlayer). Default: 0.5")
     parser.add_argument("--sample-moves", type=int, default=20,
                         help="Sample for each player's first N moves of a game, greedy after. "
                              "Default: 20")

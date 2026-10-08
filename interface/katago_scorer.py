@@ -5,9 +5,9 @@ plays the cleanup phase - a move that removes them (kgs-genmove_cleanup).
 Only the current position is judged (the stones, the side to move, komi and rules), not
 the move history: dead stones don't depend on it, and KGS games can hold moves KataGo's
 rules reject. A stone is dead if KataGo's ownership gives its point to the other color.
-Measured on 263 scored KGS games (workspace/kgs_scoring/): the small b10c128 network at 1
-visit agrees with a large network at 400 visits on 258 final positions, at ~30 ms per query
-on a CPU - while GNU Go's list had cost the bot a ranked game it had won.
+Measured on 263 scored KGS games: the small b10c128 network at 1 visit agrees with a large
+network at 400 visits on 258 final positions, at ~30 ms per query on a CPU - while GNU Go's
+list had cost the bot a ranked game it had won (MEASUREMENTS.md, "End of game").
 
 Standard library only. Positions and moves are GTP vertices ("D4", "pass").
 """
@@ -16,7 +16,9 @@ import itertools
 import json
 import os
 import subprocess
+import sys
 import threading
+import time
 
 GTP_COLUMNS = "ABCDEFGHJKLMNOPQRST"  # GTP skips I
 # KGS's kgs-rules names -> KataGo's
@@ -37,38 +39,71 @@ class KataGoScorer(object):
     command: the full command line (default: <exe> analysis -config <config> -model <model>).
     visits: per final_status query - 1 (the network alone) is enough on finished positions.
     cleanup_visits: per cleanup move, which needs a real move choice.
+    restart_wait: if KataGo has exited, the next query restarts it (waiting for its network
+    to load) - but at most once per this many seconds, so one that keeps failing is not
+    respawned on every call. A query in flight when it exits fails; the next one restarts.
     """
 
     def __init__(self, exe=None, model=None, config=None, command=None, visits=1,
-                 cleanup_visits=32, timeout=10.0, board_size=19):
+                 cleanup_visits=32, timeout=10.0, board_size=19, restart_wait=30.0):
         # ownership and score from Black's side, whatever the config file says
         self.command = command or [exe, "analysis", "-config", config, "-model", model,
                                    "-override-config", "reportAnalysisWinratesAs=BLACK"]
         self.visits, self.cleanup_visits = visits, cleanup_visits
         self.timeout, self.size = timeout, board_size
+        self.restart_wait = restart_wait
         self._ids = itertools.count()
-        self._pending = {}
-        self._lock = threading.Lock()
-        # KataGo's last stderr lines, quoted in errors: why it failed to start or exited
+        self._lock = threading.Lock()  # the current process, its stdin and pending queries
+        self._restart_lock = threading.Lock()
+        self._closed = False
+        # KataGo's last stderr lines and warnings, quoted in errors: why it failed or exited
         self._stderr = collections.deque(maxlen=20)
         self._start()
-        # the first query waits for the network to load; a failure here is a startup error
-        self.final_status([], "B", 7.5, "chinese", timeout=max(timeout, 120.0))
+        self._warm_up()  # a failure here is a startup error
 
     def _start(self):
         # KataGo's Linux releases are AppImages, which need FUSE unless told to unpack
         # themselves first (servers and containers often lack FUSE; other builds ignore it)
         env = dict(os.environ, APPIMAGE_EXTRACT_AND_RUN="1")
-        self.proc = subprocess.Popen(self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE, text=True, bufsize=1, env=env)
-        threading.Thread(target=self._read, name="katago-reader", daemon=True).start()
-        self._stderr_reader = threading.Thread(target=self._read_stderr, name="katago-stderr",
-                                               daemon=True)
-        self._stderr_reader.start()
+        proc = subprocess.Popen(self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, bufsize=1, env=env)
+        # Each process has its own pending queries: when an old one's reader sees it exit
+        # and wakes its waiters, a restarted process's queries are not among them.
+        pending = {}
+        stderr_reader = threading.Thread(target=self._read_stderr, args=(proc,),
+                                         name="katago-stderr", daemon=True)
+        with self._lock:
+            self.proc, self._pending, self._stderr_reader = proc, pending, stderr_reader
+            self._started = time.monotonic()
+        threading.Thread(target=self._read, args=(proc, pending), name="katago-reader",
+                         daemon=True).start()
+        stderr_reader.start()
 
-    def _read_stderr(self):
+    def _warm_up(self):
+        """The first query, which waits for the network to load."""
+        self._ask(self._position([], "B", 7.5, "chinese", self.visits),
+                  max(self.timeout, 120.0))
+
+    def _ensure_running(self):
+        """Restart KataGo if it has exited - unless it was (re)started under restart_wait
+        seconds ago - and wait for it to load. Other queries wait meanwhile."""
+        if self.alive():
+            return
+        with self._restart_lock:
+            if self.alive():
+                return
+            if self._closed or time.monotonic() - self._started < self.restart_wait:
+                raise RuntimeError(self._with_stderr(
+                    "KataGo is not running (exit code {})".format(self.proc.poll())))
+            sys.stderr.write("katago_scorer: KataGo exited (code {}); restarting\n".format(
+                self.proc.poll()))
+            sys.stderr.flush()
+            self._start()
+            self._warm_up()
+
+    def _read_stderr(self, proc):
         # also keeps the pipe drained, so a chatty KataGo never blocks on a full buffer
-        for line in self.proc.stderr:
+        for line in proc.stderr:
             if line.strip():
                 self._stderr.append(line.rstrip())
 
@@ -80,53 +115,64 @@ class KataGoScorer(object):
             return message
         return "{}; KataGo's last output:\n  {}".format(message, "\n  ".join(lines[-5:]))
 
-    def _read(self):
-        for line in self.proc.stdout:
+    def _read(self, proc, pending):
+        for line in proc.stdout:
             try:
                 reply = json.loads(line)
             except ValueError:
                 continue
+            if "warning" in reply and "error" not in reply:
+                # about the query (e.g. a field KataGo ignores), sent before its answer
+                # under the same id: note it, and keep waiting for the answer
+                warning = "warning: {} ({})".format(reply["warning"], reply.get("field", ""))
+                self._stderr.append(warning)
+                sys.stderr.write("katago_scorer: KataGo {}\n".format(warning))
+                sys.stderr.flush()
+                continue
             with self._lock:
-                waiter = self._pending.pop(reply.get("id"), None)
+                waiter = pending.pop(reply.get("id"), None)
             if waiter is not None:
                 waiter["reply"] = reply
                 waiter["done"].set()
-        with self._lock:  # KataGo exited: wake everyone still waiting
-            for waiter in self._pending.values():
+        with self._lock:  # KataGo exited: wake everyone still waiting on it
+            for waiter in pending.values():
                 waiter["done"].set()
-            self._pending.clear()
+            pending.clear()
 
     def alive(self):
         return self.proc.poll() is None
 
     def close(self):
+        self._closed = True
         if self.alive():
             self.proc.terminate()
 
     def _query(self, query, timeout=None):
-        if not self.alive():
-            raise RuntimeError(self._with_stderr(
-                "KataGo is not running (exit code {})".format(self.proc.poll())))
+        self._ensure_running()
+        return self._ask(query, self.timeout if timeout is None else timeout)
+
+    def _ask(self, query, wait):
+        """Send one query to the current process and wait up to wait seconds for its answer."""
         qid = str(next(self._ids))
         waiter = {"done": threading.Event(), "reply": None}
         with self._lock:
-            self._pending[qid] = waiter
+            proc, pending = self.proc, self._pending
+            pending[qid] = waiter
             try:
-                self.proc.stdin.write(json.dumps(dict(query, id=qid)) + "\n")
-                self.proc.stdin.flush()
-            except OSError:  # exited since the check above
-                self._pending.pop(qid, None)
+                proc.stdin.write(json.dumps(dict(query, id=qid)) + "\n")
+                proc.stdin.flush()
+            except OSError:  # it has exited
+                pending.pop(qid, None)
                 raise RuntimeError(self._with_stderr("KataGo exited"))
-        wait = self.timeout if timeout is None else timeout
         if not waiter["done"].wait(wait):
             with self._lock:
-                self._pending.pop(qid, None)
+                pending.pop(qid, None)
             raise RuntimeError(self._with_stderr(
                 "KataGo did not answer within {:.0f} s".format(wait)))
         reply = waiter["reply"]
         if reply is None:
             try:  # its stdout closes a moment before the process is gone
-                self.proc.wait(timeout=1.0)
+                proc.wait(timeout=1.0)
             except subprocess.TimeoutExpired:
                 pass
             raise RuntimeError(self._with_stderr("KataGo exited"))
@@ -143,9 +189,8 @@ class KataGoScorer(object):
     def final_status(self, stones, to_move, komi, rules, timeout=None):
         """stones: [[color, vertex], ...] on the board. -> {"dead": [vertex, ...],
         "score_lead": Black's estimated lead, "contested": points whose owner is still open
-        (0.3 <= |ownership| < 0.9) - 0-2 on finished boards, 12-275 in mid-game (measured on
-        212 KGS games, workspace/samples2/contested_dist.py); dame and seki read near 0, so
-        they count as settled}."""
+        (0.3 <= |ownership| < 0.9) - 0-2 on finished boards, 12-275 in mid-game (212 KGS
+        games, MEASUREMENTS.md); dame and seki read near 0, so they count as settled}."""
         reply = self._query(self._position(stones, to_move, komi, rules, self.visits), timeout)
         own = reply["ownership"]  # + = Black's point
         dead = [v.upper() for c, v in stones

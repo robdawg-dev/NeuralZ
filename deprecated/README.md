@@ -25,6 +25,19 @@ Two cautions if you ever read them as a reference:
 - `preprocessing_python.py` still imports `keras.backend`, which the rest of the project no
   longer uses this way.
 
+## Single-process GTP bot
+
+| file | superseded by |
+|---|---|
+| `run_gtp_player.py` | `go_server.py` + `go_client.py` |
+
+The bot as one process: it loaded the network itself and spoke GTP on stdin/stdout. The
+server/client pair replaced it - one process holds the network for any number of bots,
+with compiled batched inference, symmetry averaging and KataGo end-of-game judging. This
+copy has no KataGo judging (dead stones come from GNU Go only), no stop file and no
+`--no-ladder-guard`. It was moved here from the repository root unchanged; run it from the
+root as `PYTHONPATH=. python deprecated/run_gtp_player.py <model.json> <weights.h5>`.
+
 ## Per-game shard pipeline
 
 The pipeline before `convert_shuffled.py`. Superseded by the one described in

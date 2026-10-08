@@ -1,8 +1,8 @@
 """Start the bot programs as real processes, as kgsGtp does, and talk GTP to them:
-run_gtp_player.py (network in-process), and go_server.py + go_client.py (shared network).
+go_server.py (holds the network) + go_client.py (the GTP engine).
 
-Marked slow: each process imports TensorFlow (the server and run_gtp_player.py) or the
-game engine, which takes a few seconds.
+Marked slow: each process imports TensorFlow (the server) or the game engine, which takes
+a few seconds.
 """
 import os
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
@@ -62,11 +62,6 @@ def _free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
-
-
-def test_run_gtp_player_plays_through_gtp(model_files):
-    replies, proc = _gtp([sys.executable, "run_gtp_player.py", *model_files], GAME)
-    _check_game(replies, proc)
 
 
 @pytest.fixture(scope="module")

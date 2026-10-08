@@ -1,7 +1,7 @@
 # Built from uv.lock, so the container runs exactly the package versions local development
 # and the tests use - Python included (.python-version). TensorFlow's CUDA/cuDNN libraries
 # come from the lockfile too, as pip packages (the `gpu` extra: tensorflow[and-cuda]), so the
-# host needs only the NVIDIA driver and the container toolkit. See TF_UPGRADE_PLAN.md.
+# host needs only the NVIDIA driver and the container toolkit.
 #
 # (The previous image was built on tensorflow/tensorflow:2.21.0-gpu. That fixed Python at
 # 3.11, took TF/Keras/NumPy from the base image rather than from uv.lock, and shipped a

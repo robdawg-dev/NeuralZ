@@ -45,10 +45,11 @@ class ProbabilisticPolicyPlayer(object):
        sample_ratio limits sampling to the close calls: only moves at least sample_ratio
        times as likely as the most likely one (None: every move). Where one move is
        clearly preferred it is the only candidate, so the move is effectively greedy and
-       variation only enters where the network itself sees a close call. Measured on
-       b20c256 (workspace/sample_ratio/): ratio 0.5 for the first 20 own moves took a
-       human's repeated opening line away by ply 30-40 in every game, and scored 49.75%
-       (+/-2.5) against its own greedy self over 400 games.
+       variation only enters where the network itself sees a close call. On b20c256,
+       ratio 0.5 for the first 20 own moves costs 1.6 points of agreement with KataGo's
+       move, took a human's repeated opening line away by ply 30-40, and won 58.5% of 400
+       games against its own greedy self - no cost in strength (MEASUREMENTS.md,
+       "Sampling in the opening").
 
        Moves are never sampled while one of the player's own stones is in atari: there a
        "close call" can be the first step of running a ladder the network rates nearly

@@ -16,7 +16,8 @@ from interface.katago_scorer import KataGoScorer, vertex_index
 from tests.test_go_server_client import model_files  # noqa: F401 - pytest fixture
 
 # A stand-in for `katago analysis`: Black owns every point (so every White stone is dead),
-# komi 99 -> an error reply, komi 77 -> no reply at all; with avoidMoves, two move infos
+# komi 99 -> an error reply, komi 77 -> no reply at all, komi 33 -> a warning line before
+# the answer, komi 66 -> the engine crashes; with avoidMoves, two move infos
 # with the pass first (which must be skipped). Ownership is +1 everywhere (a settled board),
 # or 0.5 everywhere at komi 55 (every point contested).
 FAKE_KATAGO = textwrap.dedent('''
@@ -28,6 +29,10 @@ FAKE_KATAGO = textwrap.dedent('''
         if q["komi"] == 99:
             print(json.dumps({"id": q["id"], "error": "boom"}), flush=True)
             continue
+        if q["komi"] == 66:
+            sys.exit(3)
+        if q["komi"] == 33:
+            print(json.dumps({"id": q["id"], "field": "foo", "warning": "unused"}), flush=True)
         n = q["boardXSize"] * q["boardYSize"]
         reply = {"id": q["id"], "ownership": [0.5 if q["komi"] == 55 else 1.0] * n,
                  "rootInfo": {"scoreLead": 12.5}, "query": q}
@@ -88,6 +93,33 @@ def test_katago_errors_and_silence_become_exceptions(scorer):
         scorer.final_status(STONES, "B", 77, "chinese")
     # and the engine still answers afterwards
     assert scorer.final_status(STONES, "B", 0.5, "chinese")["dead"]
+
+
+def test_a_warning_is_not_taken_for_the_answer(scorer):
+    assert scorer.final_status(STONES, "B", 33, "chinese")["score_lead"] == 12.5
+
+
+def test_a_crashed_katago_is_restarted_by_the_next_query(fake_katago):
+    s = KataGoScorer(command=fake_katago, timeout=2.0, restart_wait=0.0)
+    try:
+        first = s.proc
+        with pytest.raises(RuntimeError, match="KataGo exited"):
+            s.final_status(STONES, "B", 66, "chinese")
+        assert sorted(s.final_status(STONES, "B", 0.5, "chinese")["dead"]) == ["Q16", "Q17"]
+        assert s.proc is not first
+    finally:
+        s.close()
+
+
+def test_a_crashing_katago_is_not_respawned_on_every_query(fake_katago):
+    s = KataGoScorer(command=fake_katago, timeout=2.0, restart_wait=3600.0)
+    try:
+        with pytest.raises(RuntimeError, match="KataGo exited"):
+            s.final_status(STONES, "B", 66, "chinese")
+        with pytest.raises(RuntimeError, match="not running"):
+            s.final_status(STONES, "B", 0.5, "chinese")
+    finally:
+        s.close()
 
 
 def test_a_timeout_reports_the_wait_actually_used(scorer):

@@ -4,7 +4,6 @@ exclude = .git,.venv,build,deprecated,__pycache__,dist,older_scripts,workspace
 # These set CUDA_VISIBLE_DEVICES before anything imports TensorFlow, so their imports
 # deliberately come after code.
 per-file-ignores =
-    run_gtp_player.py: E402
     tests/test_bot_startup.py: E402
     tests/test_go_server_client.py: E402
     tests/test_lr_override.py: E402
