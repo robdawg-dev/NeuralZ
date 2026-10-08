@@ -103,8 +103,8 @@ def test_training_writes_a_loadable_policy_value_net(tmp_path):
     head_after_1 = net.model.get_layer("value_hidden").get_weights()[0].copy()
     net.model.load_weights(os.path.join(out, "weights.00002.weights.h5"))
     assert not np.allclose(net.model.get_layer("value_hidden").get_weights()[0], head_after_1)
-    planes = (np.random.default_rng(0).random((2, 19, 19, policy.preprocessor
-                                                .get_output_dimension())) < 0.3)
+    depth = policy.preprocessor.get_output_dimension()
+    planes = np.random.default_rng(0).random((2, 19, 19, depth)) < 0.3
     planes = planes.astype(np.float32)
     assert np.allclose(net.forward(planes), policy.forward(planes), atol=1e-6)
 

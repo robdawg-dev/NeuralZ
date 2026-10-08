@@ -127,8 +127,8 @@ def test_training_runs_and_saves_a_policy_score_net(tmp_path):
     assert os.path.exists(os.path.join(out, "lr_override.applied.00003.txt"))
     assert not os.path.exists(os.path.join(out, "lr_override.txt"))
     # only the latest --keep-optimizer optimizer states are kept
-    assert [os.path.exists(snt.optimizer_path(out, e)) for e in (1, 2, 3)] == [False, True,
-                                                                              True]
+    kept = [os.path.exists(snt.optimizer_path(out, e)) for e in (1, 2, 3)]
+    assert kept == [False, True, True]
 
     net = NeuralNetBase.load_model(os.path.join(out, "model.json"))
     assert isinstance(net, PolicyValueNet)

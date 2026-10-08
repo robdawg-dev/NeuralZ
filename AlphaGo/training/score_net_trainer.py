@@ -31,7 +31,6 @@ import re
 
 import h5py as h5
 import numpy as np
-import tensorflow as tf
 import keras
 from keras import mixed_precision, ops
 from keras.callbacks import Callback, ReduceLROnPlateau, TerminateOnNaN

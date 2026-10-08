@@ -136,8 +136,8 @@ def run_split(split_dir, repo_root, katago, model, config, visits, threads, log_
             agree += (black_area > 0) == (winner == "B")
         done += 1
         if not quiet and done % 5000 == 0:
-            print("  {}/{} games, {:.0f}/s".format(done, len(rows),
-                                                  done / (time.time() - t0)), flush=True)
+            print("  {}/{} games, {:.0f}/s".format(
+                done, len(rows), done / (time.time() - t0)), flush=True)
     proc.wait()
     if done != len(rows):
         raise RuntimeError("KataGo answered {} of {} queries".format(done, len(rows)))

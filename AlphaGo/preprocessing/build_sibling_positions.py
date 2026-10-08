@@ -39,7 +39,6 @@ import time
 import h5py as h5
 import numpy as np
 
-from AlphaGo import go
 from AlphaGo.preprocessing.add_value_targets import sidecar_path
 from AlphaGo.preprocessing.preprocessing import Preprocess
 from AlphaGo.training.shard_stream import PACKED_STATES, PLANES_SHAPE

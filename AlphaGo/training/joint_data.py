@@ -49,9 +49,9 @@ class JointReader(object):
             with h5.File(sidecar_path(shard), "r") as f:
                 if len(f["value"]) != n or "black_to_move" not in f:
                     raise ValueError("{}: {} rows (shard has {}), black_to_move {} - rerun "
-                                     "add_value_targets".format(sidecar_path(shard),
-                                                               len(f["value"]), n,
-                                                               "black_to_move" in f))
+                                     "add_value_targets".format(
+                                         sidecar_path(shard), len(f["value"]), n,
+                                         "black_to_move" in f))
 
     def _files(self, i):
         if i not in self.handles:
