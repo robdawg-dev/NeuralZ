@@ -11,15 +11,18 @@ import pytest
 
 import go_client
 import go_server
-from interface.gtp_wrapper import ExtendedGtpEngine, GTPGameConnector
-from interface.katago_scorer import KataGoScorer, vertex_index
+from interface.gtp_wrapper import (BORDER_MOVES_MAX, OPEN_MAX, ExtendedGtpEngine,
+                                   GTPGameConnector)
+from interface.katago_scorer import KataGoScorer, open_points, vertex_index
 from tests.test_go_server_client import model_files  # noqa: F401 - pytest fixture
 
 # A stand-in for `katago analysis`: Black owns every point (so every White stone is dead),
 # komi 99 -> an error reply, komi 77 -> no reply at all, komi 33 -> a warning line before
 # the answer, komi 66 -> the engine crashes; with avoidMoves, two move infos
-# with the pass first (which must be skipped). Ownership is +1 everywhere (a settled board),
-# or 0.5 everywhere at komi 55 (every point contested).
+# with the pass first (which must be skipped); with allowMoves, a move outside them first
+# (which must be skipped) and then J10. Ownership is +1 everywhere (a settled board), 0.5
+# everywhere at komi 55 (every point contested), or at komi 44 +1 on columns A-K and -1 on
+# L-T (Black's area on the left, White's on the right).
 FAKE_KATAGO = textwrap.dedent('''
     import json, sys
     for line in sys.stdin:
@@ -34,10 +37,14 @@ FAKE_KATAGO = textwrap.dedent('''
         if q["komi"] == 33:
             print(json.dumps({"id": q["id"], "field": "foo", "warning": "unused"}), flush=True)
         n = q["boardXSize"] * q["boardYSize"]
-        reply = {"id": q["id"], "ownership": [0.5 if q["komi"] == 55 else 1.0] * n,
-                 "rootInfo": {"scoreLead": 12.5}, "query": q}
+        own = [0.5 if q["komi"] == 55 else 1.0] * n
+        if q["komi"] == 44:
+            own = [1.0 if i % q["boardXSize"] < 10 else -1.0 for i in range(n)]
+        reply = {"id": q["id"], "ownership": own, "rootInfo": {"scoreLead": 12.5}, "query": q}
         if "avoidMoves" in q:
             reply["moveInfos"] = [{"move": "pass", "order": 0}, {"move": "A1", "order": 1}]
+        if "allowMoves" in q:
+            reply["moveInfos"] = [{"move": "T19", "order": 0}, {"move": "J10", "order": 1}]
         print(json.dumps(reply), flush=True)
 ''')
 
@@ -66,6 +73,49 @@ def test_vertex_index_reads_ownership_from_the_top_left():
     assert vertex_index("T19", 19) == 18      # GTP skips I
     assert vertex_index("A1", 19) == 18 * 19
     assert vertex_index("j10", 19) == 9 * 19 + 8
+
+
+GTP_COLS = "ABCDEFGHJKLMNOPQRST"
+
+
+def _ownership(size, owner):
+    """owner(vertex) -> ownership, for every point of a size x size board."""
+    return [owner(GTP_COLS[i % size] + str(size - i // size)) for i in range(size * size)]
+
+
+def test_open_points_are_owned_points_a_count_gives_no_one():
+    # 5x5: Black's wall on column B has a gap at B3, White's on column D is solid; a dead
+    # White stone sits in Black's area at A3
+    stones = [["B", v] for v in ("B1", "B2", "B4", "B5")] + \
+        [["W", "D{}".format(r)] for r in range(1, 6)] + [["W", "A3"]]
+
+    def owner(v):
+        return {"A": 1.0, "B": 0.9, "C": 0.0, "E": -1.0}.get(v[0], 0.0)
+    out = open_points(stones, _ownership(5, owner), dead=["A3"], size=5)
+    # through the gap, A's points (the dead stone's included) and B3 touch White's wall:
+    # Black's open border; the C column reads as dame; White's E column is closed
+    assert sorted(out["B"]) == ["A1", "A2", "A3", "A4", "A5", "B3"]
+    assert out["W"] == []
+
+
+def test_a_closed_border_leaves_nothing_open():
+    stones = [["B", "B{}".format(r)] for r in range(1, 6)] + \
+        [["W", "D{}".format(r)] for r in range(1, 6)]
+
+    def owner(v):
+        return {"A": 1.0, "E": -1.0}.get(v[0], 0.0)
+    assert open_points(stones, _ownership(5, owner), dead=[], size=5) == {"B": [], "W": []}
+
+
+def test_border_move_closes_the_gap_in_an_open_border(scorer):
+    # Black's wall on column J has a gap at J10; White's wall on column L is solid. Black's
+    # area (A-K, komi 44 in the fake) leaks through the gap to White's wall: open
+    stones = ([["B", "J{}".format(r)] for r in range(1, 20) if r != 10] +
+              [["W", "L{}".format(r)] for r in range(1, 20)])
+    verdict = scorer.final_status(stones, "B", 44, "chinese")
+    assert "J10" in verdict["open"]["B"] and verdict["open"]["W"] == []
+    assert scorer.border_move(stones, "B", 44, "chinese") == "J10"  # T19 isn't allowed
+    assert scorer.border_move(stones, "W", 44, "chinese") is None  # White's border is closed
 
 
 def test_dead_stones_are_those_owned_by_the_other_color(scorer):
@@ -231,16 +281,27 @@ class FixedPlayer(object):
 
 
 class FakeScorer(object):
-    def __init__(self, dead=("Q16",), cleanup="D4", fail=False, contested=0):
+    """open=None answers like a server older than the border check (no "open")."""
+
+    def __init__(self, dead=("Q16",), cleanup="D4", fail=False, contested=0, open=None,
+                 border="K11"):
         self.dead, self.cleanup, self.fail = list(dead), cleanup, fail
-        self.contested = contested
+        self.contested, self.open, self.border = contested, open, border
         self.asked = []
 
     def final_status(self, stones, to_move, komi, rules):
         self.asked.append((stones, to_move, komi, rules))
         if self.fail:
             raise RuntimeError("katago down")
-        return {"dead": self.dead, "score_lead": -6.5, "contested": self.contested}
+        verdict = {"dead": self.dead, "score_lead": -6.5, "contested": self.contested}
+        if self.open is not None:
+            verdict["open"] = self.open
+        return verdict
+
+    def border_move(self, stones, to_move, komi, rules):
+        if isinstance(self.border, Exception):
+            raise self.border
+        return self.border
 
     def cleanup_move(self, stones, to_move, komi, rules):
         if self.fail:
@@ -328,7 +389,7 @@ def _long_game(e, opponent_passes=True):
 @pytest.mark.parametrize("contested,seen", [(150, [False]), (11, [False]), (10, [True]),
                                             (0, [True])])
 def test_bot_passes_back_only_on_a_settled_board(contested, seen):
-    player = FixedPlayer(move=(10, 9))  # K10: empty in _long_game
+    player = FixedPlayer(move=(10, 9))  # L10: empty in _long_game
     sc = FakeScorer(contested=contested)
     e = ExtendedGtpEngine(GTPGameConnector(player), scorer=sc)
     _long_game(e)
@@ -350,6 +411,48 @@ def test_pass_check_only_after_an_opponents_pass_and_falls_back_without_katago()
         _long_game(e)
         e.send("genmove w")
         assert player.seen == [True]   # the player's own rule decides
+
+
+def _open(n):
+    return {"B": [], "W": ["A{}".format(i + 1) for i in range(n)]}
+
+
+def test_bot_closes_its_open_border_before_passing_back():
+    player = FixedPlayer(move=(10, 9))
+    e = ExtendedGtpEngine(GTPGameConnector(player), scorer=FakeScorer(open=_open(OPEN_MAX + 1)))
+    _long_game(e)
+    assert e.send("genmove w") == "= K11\n\n"  # KataGo's border move, not the player's
+    assert player.seen == []
+
+
+def test_a_few_open_points_still_let_the_bot_pass_back():
+    player = FixedPlayer(move=(10, 9))
+    e = ExtendedGtpEngine(GTPGameConnector(player), scorer=FakeScorer(open=_open(OPEN_MAX)))
+    _long_game(e)
+    e.send("genmove w")
+    assert player.seen == [True]
+
+
+@pytest.mark.parametrize("border", [None, RuntimeError("404"), "A19"])  # A19: occupied
+def test_without_a_usable_border_move_the_bot_plays_on_by_itself(border):
+    player = FixedPlayer(move=(10, 9))
+    sc = FakeScorer(open=_open(OPEN_MAX + 1), border=border)
+    e = ExtendedGtpEngine(GTPGameConnector(player), scorer=sc)
+    _long_game(e)
+    assert e.send("genmove w") == "= L10\n\n"
+    assert player.seen == [False]  # its own move, but not a pass
+
+
+def test_border_moves_are_capped_per_game():
+    player = FixedPlayer(move=(10, 9))
+    game = GTPGameConnector(player)
+    e = ExtendedGtpEngine(game, scorer=FakeScorer(open=_open(OPEN_MAX + 1)))
+    _long_game(e)
+    game.border_moves = BORDER_MOVES_MAX
+    e.send("genmove w")
+    assert player.seen == [True]  # back to the player's own rule
+    e.send("clear_board")
+    assert game.border_moves == 0
 
 
 def test_default_katago_config_is_found_in_a_checkout():

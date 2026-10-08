@@ -17,11 +17,14 @@ network) that judges finished games for every bot (interface/katago_scorer.py):
 
     POST /final_status -> body: JSON {"stones": [[color, vertex], ...], "to_move", "komi",
                           "rules"}. Reply: JSON {"dead": [vertex, ...], "score_lead",
-                          "contested"} - contested: points whose owner is still open, which
-                          the bots check before passing back.
+                          "contested", "open"} - contested: points whose owner is still
+                          open; open: each color's points a count now would give no one
+                          (an unclosed border). The bots check both before passing back.
     POST /cleanup_move -> body: the same, with "to_move" the bot's color. Reply: JSON
                           {"move": vertex or "pass"} - a pass only once none of the
                           opponent's stones are dead (kgs-genmove_cleanup).
+    POST /border_move  -> body: the same. Reply: JSON {"move": vertex or null} - the move
+                          that best closes the bot's open border, played instead of passing.
 
 Requests are answered by one inference thread that gathers whatever positions arrive
 within --batch-wait-ms (up to --max-batch) into a single model call: bots moving at the
@@ -223,7 +226,7 @@ def make_handler(policy, scorer=None):
                 self._error(404, "unknown path {}".format(self.path))
 
         def do_POST(self):
-            if self.path in ("/final_status", "/cleanup_move"):
+            if self.path in ("/final_status", "/cleanup_move", "/border_move"):
                 self._judge()
                 return
             if self.path != "/policy":
@@ -256,6 +259,8 @@ def make_handler(policy, scorer=None):
             try:
                 if self.path == "/final_status":
                     answer = scorer.final_status(*args)
+                elif self.path == "/border_move":
+                    answer = {"move": scorer.border_move(*args)}
                 else:
                     answer = {"move": scorer.cleanup_move(*args)}
             except Exception as e:  # noqa: BLE001

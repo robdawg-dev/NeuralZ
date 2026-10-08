@@ -97,6 +97,22 @@ After the deploy (KGS games of 2026-10-06, not re-checked): after an opponent's 
 move 100 the bot played on once and passed back 167 times, and only 1 of 151 scored
 results differed from KataGo's count, marginally. Source: `workspace/kokoyyy/folder_check.py`.
 
+### Closed borders before passing back (`OPEN_MAX = 4`)
+
+The contested check misses one way to lose points: KataGo is sure whose area it is, but the
+border isn't closed, so a count gives the area to no one. Opponents passing on the bot's
+open border took 23-47 points in 5 of the 916 KGS games of 2026-10-06 to 08 (3 of them by
+one opponent, HoreaUrsu); 2 of those were wins turned into losses (checked,
+`workspace/exploits/open_borders.py`). So the bot also passes back only with at most 4 of
+its own points open, and otherwise plays the KataGo move that best closes the border.
+
+- **Threshold** (checked, `workspace/exploits/open_calibration.py`, the deployed judge: b10
+  at 1 visit): on the 540 pass-backs the contested check allowed, the bot had 0-2 open
+  points on 531 boards and 10-47 on 9 - the 5 games above, a 4.5-point loss with 10 open
+  points, and 3 wins. Nothing fell between 3 and 9.
+- **Closing** (checked, `workspace/exploits/border_replay.py`): on those boards, with the
+  opponent passing every time, the border moves left 0-2 open points after 1-8 moves.
+
 ## Inference speed
 
 From `workspace/profiling/results_dev_summary.md` (checked): b20c256, 48 input planes,

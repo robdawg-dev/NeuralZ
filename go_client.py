@@ -100,12 +100,17 @@ class RemotePolicy(object):
         return json.loads(self._request(path, body))
 
     def final_status(self, stones, to_move, komi, rules):
-        """KataGo's dead stones for the position: {"dead": [vertex, ...], "score_lead"}."""
+        """KataGo's verdict on the position: {"dead": [vertex, ...], "score_lead",
+        "contested", "open"} (see go_server)."""
         return self._judge("/final_status", stones, to_move, komi, rules)
 
     def cleanup_move(self, stones, to_move, komi, rules):
         """KataGo's kgs-genmove_cleanup move for to_move (the bot): a vertex, or "pass"."""
         return self._judge("/cleanup_move", stones, to_move, komi, rules)["move"]
+
+    def border_move(self, stones, to_move, komi, rules):
+        """KataGo's move closing to_move's (the bot's) open border: a vertex, or None."""
+        return self._judge("/border_move", stones, to_move, komi, rules)["move"]
 
 
 def build_parser():

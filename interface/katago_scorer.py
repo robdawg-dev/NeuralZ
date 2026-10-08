@@ -33,6 +33,57 @@ def vertex_index(vertex, size):
     return (size - row) * size + x
 
 
+def _vertex(i, size):
+    return GTP_COLUMNS[i % size] + str(size - i // size)
+
+
+def neutral_regions(stones, dead, size):
+    """The board as KGS counts it, with the dead stones removed: the empty regions (dead
+    stones' points included) that touch live stones of both colors, so count for no one.
+    -> [[point index, ...], ...]"""
+    color_at = {}
+    dead = {v.upper() for v in dead}
+    for c, v in stones:
+        if v.upper() not in dead:
+            color_at[vertex_index(v, size)] = c.upper()
+    regions, seen = [], set()
+    for start in range(size * size):
+        if start in color_at or start in seen:
+            continue
+        region, touches, stack = [], set(), [start]
+        seen.add(start)
+        while stack:
+            i = stack.pop()
+            region.append(i)
+            x, y = i % size, i // size
+            for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                if 0 <= nx < size and 0 <= ny < size:
+                    j = ny * size + nx
+                    if j in color_at:
+                        touches.add(color_at[j])
+                    elif j not in seen:
+                        seen.add(j)
+                        stack.append(j)
+        if len(touches) == 2:
+            regions.append(region)
+    return regions
+
+
+def open_points(stones, ownership, dead, size, min_ownership=0.5):
+    """Points KataGo gives to a color that a count at this moment would score for no one:
+    {"B": [vertex, ...], "W": [...]}. In a neutral region (neutral_regions), every point
+    KataGo still gives to one side (|ownership| >= min_ownership) is that side's open
+    border - points it loses if the game ends now. Dame read near 0 and are not counted."""
+    out = {"B": [], "W": []}
+    for region in neutral_regions(stones, dead, size):
+        for i in region:
+            if ownership[i] >= min_ownership:
+                out["B"].append(_vertex(i, size))
+            elif ownership[i] <= -min_ownership:
+                out["W"].append(_vertex(i, size))
+    return out
+
+
 class KataGoScorer(object):
     """One KataGo analysis engine process answering queries from any number of threads.
 
@@ -202,14 +253,16 @@ class KataGoScorer(object):
         """stones: [[color, vertex], ...] on the board. -> {"dead": [vertex, ...],
         "score_lead": Black's estimated lead, "contested": points whose owner is still open
         (0.3 <= |ownership| < 0.9) - 0-2 on finished boards, 12-275 in mid-game (212 KGS
-        games, MEASUREMENTS.md); dame and seki read near 0, so they count as settled}."""
+        games, MEASUREMENTS.md); dame and seki read near 0, so they count as settled,
+        "open": each color's points a count now would give no one (open_points)}."""
         reply = self._query(self._position(stones, to_move, komi, rules, self.visits), timeout)
         own = reply["ownership"]  # + = Black's point
         dead = [v.upper() for c, v in stones
                 if (own[vertex_index(v, self.size)] < 0) == (c.upper() == "B")]
         contested = sum(1 for o in own if 0.3 <= abs(o) < 0.9)
         return {"dead": dead, "score_lead": reply["rootInfo"]["scoreLead"],
-                "contested": contested}
+                "contested": contested,
+                "open": open_points(stones, own, dead, self.size)}
 
     def cleanup_move(self, stones, color, komi, rules):
         """For color's kgs-genmove_cleanup: "pass" once none of the opponent's stones are
@@ -225,3 +278,27 @@ class KataGoScorer(object):
         moves = [m["move"] for m in sorted(infos, key=lambda m: m.get("order", 0))
                  if m["move"].lower() != "pass"]
         return moves[0] if moves else "pass"
+
+    def border_move(self, stones, color, komi, rules):
+        """For color, which would pass back with some of its border still open (final_status
+        "open"): KataGo's best move among the empty points of the neutral regions holding
+        color's open points - the gap that closes the border is often a point KataGo gives
+        to no one. None if color has no open points or KataGo finds no such move."""
+        color = color.upper()
+        verdict = self.final_status(stones, color, komi, rules)
+        if not verdict["open"][color]:
+            return None
+        occupied = {v.upper() for _c, v in stones}
+        mine = {vertex_index(v, self.size) for v in verdict["open"][color]}
+        allowed = sorted({_vertex(i, self.size)
+                          for region in neutral_regions(stones, verdict["dead"], self.size)
+                          if mine.intersection(region) for i in region}
+                         - occupied)  # a dead stone's point is not yet playable
+        if not allowed:
+            return None
+        query = self._position(stones, color, komi, rules, self.cleanup_visits)
+        query["allowMoves"] = [{"player": color, "moves": allowed, "untilDepth": 1}]
+        infos = self._query(query).get("moveInfos") or []
+        moves = [m["move"].upper() for m in sorted(infos, key=lambda m: m.get("order", 0))
+                 if m["move"].upper() in allowed]
+        return moves[0] if moves else None

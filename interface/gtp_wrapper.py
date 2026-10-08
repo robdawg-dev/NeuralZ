@@ -49,6 +49,14 @@ _GO_TO_GTP_COLOR = {go.BLACK: gtp.BLACK, go.WHITE: gtp.WHITE}
 # positions 12-275 - so 10 lets no mid-game position end, and stopped exactly the games that
 # ended on an unsettled board (171-211).
 SETTLED_MAX_CONTESTED = 10
+# Most of the bot's own points that may be left open (KataGo gives them to the bot, but the
+# border isn't closed, so a count gives them to no one) when it passes back. Over the 540
+# pass-backs the gate allowed after its deploy, the bot had 0-2 open points on 531 boards and
+# 10-47 on the other 9 - five of them games lost that way (MEASUREMENTS.md).
+OPEN_MAX = 4
+# Border moves per game at most: if KataGo keeps seeing an open border, the bot passes back
+# rather than fill its own area forever.
+BORDER_MOVES_MAX = 20
 
 
 # GTP vertices are 1-indexed with row 1 at the BOTTOM of the board. GameState uses SGF's
@@ -148,28 +156,61 @@ class ExtendedGtpEngine(gtp.Engine):
         color = gtp.parse_color(arguments)
         if not color:
             raise ValueError("unknown player: {}".format(arguments))
-        move = self._game.get_move(color, pass_when_offered=self._pass_allowed(color))
-        if not self._game.make_move(color, move):
-            raise ValueError("engine rejected its own move {}".format(gtp.gtp_vertex(move)))
+        allowed, border_open = self._pass_check(color)
+        move = self._border_move(color) if border_open else None
+        if move is None:
+            move = self._game.get_move(color, pass_when_offered=allowed)
+            if not self._game.make_move(color, move):
+                raise ValueError("engine rejected its own move {}".format(
+                    gtp.gtp_vertex(move)))
         return gtp.gtp_vertex(move)
 
-    def _pass_allowed(self, color):
+    def _pass_check(self, color):
         """When the opponent has just passed and the player would pass back, may it? With a
-        scorer: only if the board is settled - at most SETTLED_MAX_CONTESTED points whose
-        owner KataGo still sees as open. Otherwise the game would end on an unfinished board,
-        judged as it stands (opponents passing right after move 100 got results off by up to
-        ~90 points that way). None leaves the player's own rule; False makes it play on,
-        asking again at the next pass."""
+        scorer, only if
+        - the board is settled: at most SETTLED_MAX_CONTESTED points whose owner KataGo
+          still sees as open. Otherwise the game would end on an unfinished board, judged
+          as it stands (opponents passing right after move 100 got results off by up to ~90
+          points that way); and
+        - the player's border is closed: at most OPEN_MAX of its points that KataGo gives
+          it but a count would give no one. Otherwise it closes the border first
+          (_border_move) - opponents passing on its open border took up to 47 points.
+        -> (pass_when_offered, border_open): None leaves the player's own rule, False makes
+        it play on (asking again at the next pass); border_open asks for a border move."""
         if self._scorer is None or not self._game.opponent_just_passed():
-            return None
+            return None, False
         try:
             verdict = self._scorer.final_status(**self._game.position(color))
         except Exception as e:  # noqa: BLE001 - fall back to the player's own rule
             sys.stderr.write("gtp: KataGo pass check failed ({})\n".format(e))
             sys.stderr.flush()
+            return None, False
+        if verdict.get("contested", 0) > SETTLED_MAX_CONTESTED:
+            return False, False
+        # a server older than the border check sends no "open": the player's own rule
+        own_open = verdict.get("open", {}).get("B" if color == gtp.BLACK else "W", [])
+        if len(own_open) > OPEN_MAX and self._game.border_moves < BORDER_MOVES_MAX:
+            return False, True
+        return None, False
+
+    def _border_move(self, color):
+        """KataGo's move closing color's open border, played and returned; None (nothing
+        played) if it has none, fails, or this engine rejects it - the caller then plays the
+        player's own move, without passing."""
+        try:
+            vertex = self._scorer.border_move(**self._game.position(color))
+        except Exception as e:  # noqa: BLE001 - e.g. a server older than border moves
+            sys.stderr.write("gtp: KataGo border move failed ({})\n".format(e))
+            sys.stderr.flush()
             return None
-        settled = verdict.get("contested", 0) <= SETTLED_MAX_CONTESTED
-        return None if settled else False
+        move = gtp.parse_vertex(vertex) if vertex else None
+        if move is None or not self._game.make_move(color, move):
+            if vertex:
+                sys.stderr.write("gtp: unusable KataGo border move {}\n".format(vertex))
+                sys.stderr.flush()
+            return None
+        self._game.border_moves += 1
+        return move
 
     def cmd_time_left(self, arguments):
         pass
@@ -306,6 +347,8 @@ class GTPGameConnector(object):
         # ordinary 'play' moves, which the board can't tell apart from real ones. Resets
         # with the board; a controller that reconnects and replays a game restarts it.
         self._own_moves = {}
+        # border moves played this game (ExtendedGtpEngine._border_move), for its cap
+        self.border_moves = 0
         # komi and the rules (kgs-rules) - read only when judging the finished game
         self._komi = 7.5
         self._rules = "chinese"
@@ -313,6 +356,7 @@ class GTPGameConnector(object):
     def clear(self):
         self._state = go.GameState(self._state.get_size(), enforce_superko=True)
         self._own_moves = {}
+        self.border_moves = 0
 
     def make_move(self, color, vertex):
         """Play a move under this engine's own rules (including positional superko) - for
@@ -338,6 +382,7 @@ class GTPGameConnector(object):
     def set_size(self, n):
         self._state = go.GameState(n, enforce_superko=True)
         self._own_moves = {}
+        self.border_moves = 0
 
     def set_komi(self, k):
         self._komi = k
