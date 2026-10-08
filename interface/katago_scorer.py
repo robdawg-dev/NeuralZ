@@ -11,6 +11,7 @@ on a CPU - while GNU Go's list had cost the bot a ranked game it had won.
 
 Standard library only. Positions and moves are GTP vertices ("D4", "pass").
 """
+import collections
 import itertools
 import json
 import os
@@ -48,6 +49,8 @@ class KataGoScorer(object):
         self._ids = itertools.count()
         self._pending = {}
         self._lock = threading.Lock()
+        # KataGo's last stderr lines, quoted in errors: why it failed to start or exited
+        self._stderr = collections.deque(maxlen=20)
         self._start()
         # the first query waits for the network to load; a failure here is a startup error
         self.final_status([], "B", 7.5, "chinese", timeout=max(timeout, 120.0))
@@ -57,8 +60,25 @@ class KataGoScorer(object):
         # themselves first (servers and containers often lack FUSE; other builds ignore it)
         env = dict(os.environ, APPIMAGE_EXTRACT_AND_RUN="1")
         self.proc = subprocess.Popen(self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL, text=True, bufsize=1, env=env)
+                                     stderr=subprocess.PIPE, text=True, bufsize=1, env=env)
         threading.Thread(target=self._read, name="katago-reader", daemon=True).start()
+        self._stderr_reader = threading.Thread(target=self._read_stderr, name="katago-stderr",
+                                               daemon=True)
+        self._stderr_reader.start()
+
+    def _read_stderr(self):
+        # also keeps the pipe drained, so a chatty KataGo never blocks on a full buffer
+        for line in self.proc.stderr:
+            if line.strip():
+                self._stderr.append(line.rstrip())
+
+    def _with_stderr(self, message):
+        if not self.alive():
+            self._stderr_reader.join(timeout=1.0)  # let it read KataGo's final words
+        lines = list(self._stderr)
+        if not lines:
+            return message
+        return "{}; KataGo's last output:\n  {}".format(message, "\n  ".join(lines[-5:]))
 
     def _read(self):
         for line in self.proc.stdout:
@@ -85,20 +105,31 @@ class KataGoScorer(object):
 
     def _query(self, query, timeout=None):
         if not self.alive():
-            raise RuntimeError("KataGo is not running (exit code {})".format(self.proc.poll()))
+            raise RuntimeError(self._with_stderr(
+                "KataGo is not running (exit code {})".format(self.proc.poll())))
         qid = str(next(self._ids))
         waiter = {"done": threading.Event(), "reply": None}
         with self._lock:
             self._pending[qid] = waiter
-            self.proc.stdin.write(json.dumps(dict(query, id=qid)) + "\n")
-            self.proc.stdin.flush()
-        if not waiter["done"].wait(self.timeout if timeout is None else timeout):
+            try:
+                self.proc.stdin.write(json.dumps(dict(query, id=qid)) + "\n")
+                self.proc.stdin.flush()
+            except OSError:  # exited since the check above
+                self._pending.pop(qid, None)
+                raise RuntimeError(self._with_stderr("KataGo exited"))
+        wait = self.timeout if timeout is None else timeout
+        if not waiter["done"].wait(wait):
             with self._lock:
                 self._pending.pop(qid, None)
-            raise RuntimeError("KataGo did not answer within {:.0f} s".format(self.timeout))
+            raise RuntimeError(self._with_stderr(
+                "KataGo did not answer within {:.0f} s".format(wait)))
         reply = waiter["reply"]
         if reply is None:
-            raise RuntimeError("KataGo exited")
+            try:  # its stdout closes a moment before the process is gone
+                self.proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                pass
+            raise RuntimeError(self._with_stderr("KataGo exited"))
         if "error" in reply:
             raise ValueError("KataGo: {}".format(reply["error"]))
         return reply

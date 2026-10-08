@@ -75,8 +75,8 @@ def dataset_info(shards):
             if PACKED_STATES not in f:
                 raise ValueError(
                     "{} has no {} - a shard from before positions were stored bit-packed. "
-                    "Convert its directory with: python -m AlphaGo.preprocessing."
-                    "repack_shards <shards directory>".format(path, PACKED_STATES))
+                    "Rebuild the shards with: python -m AlphaGo.preprocessing."
+                    "convert_shuffled <selection_dir> <out_dir>".format(path, PACKED_STATES))
             feats = f["features"][()]
             feats = (feats.decode("ascii") if isinstance(feats, bytes) else feats).split(",")
             n = len(f[PACKED_STATES])

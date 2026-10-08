@@ -16,7 +16,9 @@ With --katago, the server also runs one KataGo analysis engine (a CPU build and 
 network) that judges finished games for every bot (interface/katago_scorer.py):
 
     POST /final_status -> body: JSON {"stones": [[color, vertex], ...], "to_move", "komi",
-                          "rules"}. Reply: JSON {"dead": [vertex, ...], "score_lead"}.
+                          "rules"}. Reply: JSON {"dead": [vertex, ...], "score_lead",
+                          "contested"} - contested: points whose owner is still open, which
+                          the bots check before passing back.
     POST /cleanup_move -> body: the same, with "to_move" the bot's color. Reply: JSON
                           {"move": vertex or "pass"} - a pass only once none of the
                           opponent's stones are dead (kgs-genmove_cleanup).
@@ -29,7 +31,7 @@ same moment share one batch instead of queueing for the model one at a time.
 reflections training augments with), maps each answer back to the original orientation
 and averages them - about +1 point of top-1 accuracy for b20c256 on held-out positions.
 --symmetries 4 uses the 4 rotations - most of that gain (about +0.8) for about half the
-cost. The default, 1, evaluates the position as given. See SYMMETRY_AVERAGING_PLAN.md.
+cost. The default, 1, evaluates the position as given.
 
 The network is called through compiled TensorFlow functions, one per batch size: a batch
 is padded up to the next power of two (or --max-batch) positions, and every size is
@@ -83,7 +85,7 @@ class _Request(object):
 class BatchingPolicy(object):
     """A loaded policy network behind a single inference thread that batches requests."""
 
-    def __init__(self, model_path, weights_path, max_batch=4, batch_wait_ms=2.0,
+    def __init__(self, model_path, weights_path, max_batch=4, batch_wait_ms=10.0,
                  symmetries=1, compiled=True):
         if symmetries not in SYMMETRY_CHOICES:
             raise ValueError("symmetries must be one of {}, got {}".format(
@@ -267,6 +269,16 @@ def make_handler(policy, scorer=None):
     return Handler
 
 
+def default_katago_config():
+    """katago_analysis.cfg next to this file - where a deploy bundle puts it - or, in a
+    repo checkout, the template build_deploy.py copies it from."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    bundled = os.path.join(here, "katago_analysis.cfg")
+    if os.path.exists(bundled):
+        return bundled
+    return os.path.join(here, "deploy", "templates", "katago_analysis.cfg")
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("model", help="Path to a JSON model file")
@@ -288,7 +300,7 @@ def build_parser():
                              "suffice. Default: 4")
     parser.add_argument("--batch-wait-ms", type=float, default=10.0,
                         help="How long the inference thread waits for more positions to join "
-                             "a batch once one has arrived. Default: 2")
+                             "a batch once one has arrived. Default: 10")
     parser.add_argument("--eager", action="store_true",
                         help="Call the network as a plain eager Keras call instead of the "
                              "compiled functions (slower; for debugging or comparison)")
@@ -299,7 +311,8 @@ def build_parser():
                         help="KataGo network for --katago (a small one, e.g. b10c128)")
     parser.add_argument("--katago-config", default=None,
                         help="KataGo analysis config for --katago. Default: "
-                             "katago_analysis.cfg next to go_server.py")
+                             "katago_analysis.cfg next to go_server.py (a deploy bundle), "
+                             "else deploy/templates/katago_analysis.cfg (a repo checkout)")
     parser.add_argument("--katago-visits", type=int, default=1,
                         help="KataGo visits per dead-stone query: 1 is the network alone, "
                              "enough on finished positions. Default: 1")
@@ -323,8 +336,7 @@ def main(argv=None):
     if args.katago:
         if not args.katago_model:
             sys.exit("go_server: --katago needs --katago-model")
-        config = args.katago_config or os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                    "katago_analysis.cfg")
+        config = args.katago_config or default_katago_config()
         try:
             scorer = KataGoScorer(args.katago, args.katago_model, config,
                                   visits=args.katago_visits)
@@ -341,7 +353,7 @@ def main(argv=None):
     judging = "off (bots fall back to GNU Go)"
     if scorer is not None:
         judging = "by KataGo ({}, {} visit(s))".format(os.path.basename(args.katago_model),
-                                                      args.katago_visits)
+                                                       args.katago_visits)
     sys.stderr.write("go_server: end-of-game judging {}\n".format(judging))
     sys.stderr.flush()
     try:

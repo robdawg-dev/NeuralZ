@@ -46,4 +46,5 @@ player = ProbabilisticPolicyPlayer(
     policy, temperature=args.temperature, pass_when_offered=True,
     move_limit=args.max_moves, sample_ratio=args.sample_ratio,
     sample_moves=args.sample_moves)
-run_gtp(player, name='NeuralZ', version=args.version)
+run_gtp(player, name='NeuralZ', version=args.version,
+        board_size=int(policy.model.inputs[0].shape[1]))

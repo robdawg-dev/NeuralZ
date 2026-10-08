@@ -91,7 +91,6 @@ class TestProbabilisticPolicyPlayer(unittest.TestCase):
         self.assertEqual({player.get_move(state) for _ in range(30)}, {(1, 0)})
 
 
-
 def _ladder(breaker=None):
     """White (5, 5) in atari at (5, 6) from Black (4, 5) (5, 4) (6, 5) (6, 6): extending
     runs a ladder toward the lower-right edge, which a White stone on its path breaks."""
@@ -144,6 +143,7 @@ class TestLadderGuard(unittest.TestCase):
         player = ProbabilisticPolicyPlayer(Close(), sample_ratio=0.5, sample_moves=None)
         np.random.seed(0)
         self.assertNotIn((5, 6), {player.get_move(_ladder()) for _ in range(30)})
+
 
 if __name__ == '__main__':
     unittest.main()

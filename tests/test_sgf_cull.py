@@ -86,7 +86,7 @@ def test_byte_identical_duplicate_is_listed_and_the_earliest_copy_kept(tmp_path)
     assert list(listed) == ["g.sgf"]
     reason, kept = listed["g.sgf"]
     assert reason == "duplicate"
-    assert kept == first
+    assert os.path.normpath(kept) == os.path.normpath(first)  # the scan's own separators
 
 
 def test_same_hash_different_bytes_is_logged_not_deleted(tmp_path):

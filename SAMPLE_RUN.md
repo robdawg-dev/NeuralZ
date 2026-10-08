@@ -447,9 +447,8 @@ were built with different feature lists. Recreate the model with
 `--features-from workspace/prod_40m/shards`.
 
 **`... has no packed_states - a shard from before positions were stored bit-packed`.**
-Shards built by an older version of this repo. Convert them in place, keeping their
-position order:
-`docker compose run --rm gpu python -m AlphaGo.preprocessing.repack_shards <shards directory>`.
+Shards built by an older version of this repo. Rebuild them with `convert_shuffled`
+([step 4](#4-build-the-training-data)).
 
 **Paths like `/data` turn into `C:/Program Files/Git/data` (Git Bash).** Prefix the
 command with `MSYS_NO_PATHCONV=1`.

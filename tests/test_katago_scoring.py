@@ -1,6 +1,7 @@
 """End-of-game judging: interface/katago_scorer.py against a fake KataGo analysis engine,
 go_server's /final_status and /cleanup_move, and the GTP commands that use them
 (final_status_list, final_score, kgs-rules, kgs-genmove_cleanup) with their GNU Go fallback."""
+import os
 import sys
 import textwrap
 import threading
@@ -87,6 +88,19 @@ def test_katago_errors_and_silence_become_exceptions(scorer):
         scorer.final_status(STONES, "B", 77, "chinese")
     # and the engine still answers afterwards
     assert scorer.final_status(STONES, "B", 0.5, "chinese")["dead"]
+
+
+def test_a_timeout_reports_the_wait_actually_used(scorer):
+    with pytest.raises(RuntimeError, match="within 1 s"):
+        scorer.final_status(STONES, "B", 77, "chinese", timeout=1.0)
+
+
+def test_a_katago_that_fails_to_start_says_why(tmp_path):
+    path = tmp_path / "broken_katago.py"
+    path.write_text("import sys\nsys.stderr.write('cannot load model foo.bin.gz\\n')\n"
+                    "sys.exit(1)\n")
+    with pytest.raises(RuntimeError, match="cannot load model foo.bin.gz"):
+        KataGoScorer(command=[sys.executable, str(path)], timeout=2.0)
 
 
 def test_concurrent_queries_each_get_their_own_answer(scorer):
@@ -270,3 +284,8 @@ def test_pass_check_only_after_an_opponents_pass_and_falls_back_without_katago()
         _long_game(e)
         e.send("genmove w")
         assert player.seen == [True]   # the player's own rule decides
+
+
+def test_default_katago_config_is_found_in_a_checkout():
+    # a repo checkout has no katago_analysis.cfg beside go_server.py, only the deploy template
+    assert os.path.exists(go_server.default_katago_config())

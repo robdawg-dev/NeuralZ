@@ -286,4 +286,3 @@ def test_compiled_calls_match_eager_ones(model_files, symmetries, n_positions):
 def test_every_batch_size_up_to_max_batch_has_a_compiled_call(model_files):
     policy = go_server.BatchingPolicy(*model_files, max_batch=12)
     assert sorted(policy._compiled) == [1, 2, 4, 8, 12]
-

@@ -166,7 +166,8 @@ def main(argv=None):
         sys.stderr.write("go_client: go_server runs without --katago - dead stones from GNU Go"
                          "{}\n".format("; --cleanup ignored" if args.cleanup else ""))
     run_gtp(player, name="NeuralZ", version=args.version, scorer=scorer,
-            cleanup=args.cleanup and scorer is not None, stop_file=args.stop_file)
+            cleanup=args.cleanup and scorer is not None, stop_file=args.stop_file,
+            board_size=policy.board_size)
 
 
 if __name__ == "__main__":

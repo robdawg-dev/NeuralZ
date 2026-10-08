@@ -1,8 +1,8 @@
 import datetime
 import sys
-import multiprocessing
 import os
 import shutil
+import subprocess
 import tempfile
 import gtp
 from AlphaGo import go
@@ -52,15 +52,20 @@ def _engine_to_gtp(point, size):
     return (x + 1, size - y)
 
 
-def run_gnugo(sgf_file_name, command):
+def run_gnugo(sgf_file_name, command, timeout=10):
     """GNU Go's answer to one GTP command about the game in sgf_file_name, or None if GNU Go
-    isn't installed or answered with an error."""
+    isn't installed, answered with an error or took over timeout seconds."""
     if not shutil.which('gnugo'):
         return None
-    from subprocess import Popen, PIPE
-    p = Popen(['gnugo', '--chinese-rules', '--mode', 'gtp', '-l', sgf_file_name],
-              stdout=PIPE, stdin=PIPE, stderr=PIPE)
-    out = p.communicate(input=command.encode('utf-8'))[0].decode('utf-8')
+    p = subprocess.Popen(['gnugo', '--chinese-rules', '--mode', 'gtp', '-l', sgf_file_name],
+                         stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        out = p.communicate(input=command.encode('utf-8'), timeout=timeout)[0]
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.communicate()
+        return None
+    out = out.decode('utf-8')
     if not out.startswith('='):
         return None
     return out[2:].strip()
@@ -77,13 +82,17 @@ class ExtendedGtpEngine(gtp.Engine):
 
     stop_file: while this file exists, new games are declined (kgsGtp checks each challenge
     with boardsize) and the engine exits when a game ends (kgs-game_over) - so a deployment
-    can let every bot finish its game and stop, instead of killing it mid-game."""
+    can let every bot finish its game and stop, instead of killing it mid-game.
+
+    board_size: the only size accepted (the network's), so a challenge on another board is
+    declined up front rather than failing at the first genmove. None: any size."""
 
     def __init__(self, game_obj, name="gtp (python library)", version="0.2", scorer=None,
-                 cleanup=False, stop_file=None):
+                 cleanup=False, stop_file=None, board_size=None):
         super(ExtendedGtpEngine, self).__init__(game_obj, name, version)
         self._scorer = scorer
         self._stop_file = stop_file
+        self._board_size = board_size
         # GTP command names with a hyphen can't be method names: registered by hand
         setattr(self, "cmd_kgs-rules", self._kgs_rules)
         self.known_commands.append("kgs-rules")
@@ -106,15 +115,7 @@ class ExtendedGtpEngine(gtp.Engine):
 
     def call_gnugo(self, sgf_file_name, command):
         """GNU Go's answer, or None if it isn't installed, errs or takes over 10 s."""
-        try:
-            pool = multiprocessing.Pool(processes=1)
-            result = pool.apply_async(run_gnugo, (sgf_file_name, command))
-            output = result.get(timeout=10)
-            pool.close()
-            return output
-        except multiprocessing.TimeoutError:
-            pool.terminate()
-            return None
+        return run_gnugo(sgf_file_name, command)
 
     def cmd_play(self, arguments):
         # Overrides gtp.Engine.cmd_play to record the move leniently - see
@@ -166,6 +167,9 @@ class ExtendedGtpEngine(gtp.Engine):
         # kgsGtp sends boardsize for every challenge: an error declines it
         if self._stopping():
             raise ValueError("not accepting games: {} exists".format(self._stop_file))
+        if self._board_size is not None and arguments.strip() != str(self._board_size):
+            raise ValueError("unacceptable size: this bot plays {0}x{0} only".format(
+                self._board_size))
         return super(ExtendedGtpEngine, self).cmd_boardsize(arguments)
 
     def _kgs_game_over(self, arguments):
@@ -187,6 +191,8 @@ class ExtendedGtpEngine(gtp.Engine):
             raise ValueError('Number of handicaps could not be parsed: {}'.format(arguments))
         if number_of_stones < 2 or number_of_stones > 9:
             raise ValueError('Invalid number of handicap stones: {}'.format(number_of_stones))
+        if self.size != 19:
+            raise ValueError('Free handicap placement is only known for 19x19')
         vertex_string = ExtendedGtpEngine.recommended_handicaps[number_of_stones]
         self.cmd_set_free_handicap(vertex_string)
         return vertex_string
@@ -271,12 +277,6 @@ class ExtendedGtpEngine(gtp.Engine):
                 raise ValueError("engine rejected its own move {}".format(gtp.gtp_vertex(move)))
         sys.stderr.flush()
         return gtp.gtp_vertex(move)
-
-    def cmd_load_sgf(self, arguments):
-        pass
-
-    def cmd_save_sgf(self, arguments):
-        pass
 
 
 class GTPGameConnector(object):
@@ -407,17 +407,20 @@ class GTPGameConnector(object):
 
 
 def run_gtp(player_obj, inpt_fn=None, name="Gtp Player", version="0.0", scorer=None,
-            cleanup=False, stop_file=None):
+            cleanup=False, stop_file=None, board_size=None):
     gtp_game = GTPGameConnector(player_obj)
     gtp_engine = ExtendedGtpEngine(gtp_game, name, version, scorer=scorer, cleanup=cleanup,
-                                   stop_file=stop_file)
+                                   stop_file=stop_file, board_size=board_size)
     if inpt_fn is None:
         inpt_fn = input
 
     sys.stderr.write("GTP engine ready\n")
     sys.stderr.flush()
     while not gtp_engine.disconnect:
-        inpt = inpt_fn()
+        try:
+            inpt = inpt_fn()
+        except EOFError:  # the controller closed our stdin: nothing more will come
+            break
         # handle either single lines at a time
         # or multiple commands separated by '\n'
         cmd_list = inpt.split("\n")
