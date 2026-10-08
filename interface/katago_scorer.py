@@ -55,11 +55,15 @@ class KataGoScorer(object):
         self._ids = itertools.count()
         self._lock = threading.Lock()  # the current process, its stdin and pending queries
         self._restart_lock = threading.Lock()
+        # clear while a restarted process loads its network: queries wait on it rather
+        # than reach a KataGo that cannot answer yet within their normal timeout
+        self._ready = threading.Event()
         self._closed = False
         # KataGo's last stderr lines and warnings, quoted in errors: why it failed or exited
         self._stderr = collections.deque(maxlen=20)
         self._start()
         self._warm_up()  # a failure here is a startup error
+        self._ready.set()
 
     def _start(self):
         # KataGo's Linux releases are AppImages, which need FUSE unless told to unpack
@@ -79,27 +83,35 @@ class KataGoScorer(object):
                          daemon=True).start()
         stderr_reader.start()
 
+    def _load_wait(self):
+        return max(self.timeout, 120.0)
+
     def _warm_up(self):
         """The first query, which waits for the network to load."""
-        self._ask(self._position([], "B", 7.5, "chinese", self.visits),
-                  max(self.timeout, 120.0))
+        self._ask(self._position([], "B", 7.5, "chinese", self.visits), self._load_wait())
 
     def _ensure_running(self):
         """Restart KataGo if it has exited - unless it was (re)started under restart_wait
         seconds ago - and wait for it to load. Other queries wait meanwhile."""
         if self.alive():
+            # a restarted process is alive before its network has loaded
+            self._ready.wait(self._load_wait())
             return
         with self._restart_lock:
             if self.alive():
-                return
+                return  # another query restarted it; _ready was set before the lock freed
             if self._closed or time.monotonic() - self._started < self.restart_wait:
                 raise RuntimeError(self._with_stderr(
                     "KataGo is not running (exit code {})".format(self.proc.poll())))
             sys.stderr.write("katago_scorer: KataGo exited (code {}); restarting\n".format(
                 self.proc.poll()))
             sys.stderr.flush()
-            self._start()
-            self._warm_up()
+            self._ready.clear()  # before _start publishes the new process as alive
+            try:
+                self._start()
+                self._warm_up()
+            finally:
+                self._ready.set()  # a failed warm-up lets the waiting queries fail too
 
     def _read_stderr(self, proc):
         # also keeps the pipe drained, so a chatty KataGo never blocks on a full buffer

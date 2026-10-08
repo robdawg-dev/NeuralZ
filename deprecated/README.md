@@ -35,8 +35,8 @@ The bot as one process: it loaded the network itself and spoke GTP on stdin/stdo
 server/client pair replaced it - one process holds the network for any number of bots,
 with compiled batched inference, symmetry averaging and KataGo end-of-game judging. This
 copy has no KataGo judging (dead stones come from GNU Go only), no stop file and no
-`--no-ladder-guard`. It was moved here from the repository root unchanged; run it from the
-root as `PYTHONPATH=. python deprecated/run_gtp_player.py <model.json> <weights.h5>`.
+`--no-ladder-guard`. It was moved here from the repository root, changed only to pass the
+network's board size to `run_gtp` (which now rejects other sizes); run it from the root as `PYTHONPATH=. python deprecated/run_gtp_player.py <model.json> <weights.h5>`.
 
 ## Per-game shard pipeline
 

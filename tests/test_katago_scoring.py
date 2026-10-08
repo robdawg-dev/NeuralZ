@@ -122,6 +122,40 @@ def test_a_crashing_katago_is_not_respawned_on_every_query(fake_katago):
         s.close()
 
 
+def test_queries_wait_while_a_restarted_katago_loads(tmp_path):
+    # this KataGo takes longer to load its network than a query's timeout
+    path = tmp_path / "slow_katago.py"
+    path.write_text("import time\ntime.sleep(1.5)\n" + FAKE_KATAGO)
+    s = KataGoScorer(command=[sys.executable, str(path)], timeout=0.5, restart_wait=0.0)
+    try:
+        first = s.proc
+        with pytest.raises(RuntimeError, match="KataGo exited"):
+            s.final_status(STONES, "B", 66, "chinese")
+        first.wait(timeout=5)
+        out, errors = [], []
+
+        def query():
+            try:
+                out.append(s.final_status(STONES, "B", 0.5, "chinese"))
+            except RuntimeError as e:
+                errors.append(e)
+        restarter = threading.Thread(target=query)
+        restarter.start()
+        for _ in range(500):  # until the new process is up but still loading
+            if s.proc is not first and s.alive():
+                break
+            threading.Event().wait(0.01)
+        others = [threading.Thread(target=query) for _ in range(3)]
+        for t in others:
+            t.start()
+        for t in [restarter] + others:
+            t.join(timeout=10)
+        assert errors == []
+        assert len(out) == 4
+    finally:
+        s.close()
+
+
 def test_a_timeout_reports_the_wait_actually_used(scorer):
     with pytest.raises(RuntimeError, match="within 1 s"):
         scorer.final_status(STONES, "B", 77, "chinese", timeout=1.0)
