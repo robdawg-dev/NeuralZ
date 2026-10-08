@@ -144,6 +144,9 @@ def build_parser():
                         help="While this file exists the bot declines new games and exits when "
                              "its game ends - create it before a deployment, remove it after. "
                              "Default: STOP next to go_client.py")
+    parser.add_argument("--gtp-log", metavar="PATH",
+                        help="Append every GTP command and reply to this file, with times - "
+                             "give each bot its own. Default: no log")
     parser.add_argument("--max-moves", type=int, default=800,
                         help="Force a pass once this many moves have been played. Default: 800")
     parser.add_argument("--version", default="0.3",
@@ -167,7 +170,7 @@ def main(argv=None):
                          "{}\n".format("; --cleanup ignored" if args.cleanup else ""))
     run_gtp(player, name="NeuralZ", version=args.version, scorer=scorer,
             cleanup=args.cleanup and scorer is not None, stop_file=args.stop_file,
-            board_size=policy.board_size)
+            board_size=policy.board_size, log_path=args.gtp_log)
 
 
 if __name__ == "__main__":

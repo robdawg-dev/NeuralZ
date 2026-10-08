@@ -78,7 +78,11 @@ cap, ended naturally (checked, `step2_3_b20c256.txt`).
   query on a CPU. The 263 reference positions are checked
   (`workspace/kgs_scoring/dead_reference.json`); the agreement and timing were printed by
   `workspace/kgs_scoring/dead_stones.py` and not saved.
-- **Why not GNU Go**: GNU Go's dead-stone list cost the bot a ranked game it had won.
+- **Why not GNU Go**: GNU Go's dead-stone list cost the bot a ranked game it had won
+  (checked): NeuralZ05 vs yosh45 on 2026-10-03, recorded B+73.5. Two dead Black stones
+  inside White's center were left unmarked, so the center counted for no one; KataGo
+  (ownership -1.0 on both) puts White ahead by 3-4. Source:
+  `workspace/exploits/spring_yosh.py`.
 
 ### When the bot may pass back (`SETTLED_MAX_CONTESTED = 10`)
 
@@ -88,6 +92,10 @@ boards had 0-2 contested points (median 0) and mid-game positions 12-275, so 10 
 mid-game position end, and it stopped exactly the games that had ended on an unsettled
 board. Before this check, opponents passing right after move 100 got results off by up to
 ~90 points. Not re-checked; source `workspace/samples2/contested_dist.py`.
+
+After the deploy (KGS games of 2026-10-06, not re-checked): after an opponent's pass past
+move 100 the bot played on once and passed back 167 times, and only 1 of 151 scored
+results differed from KataGo's count, marginally. Source: `workspace/kokoyyy/folder_check.py`.
 
 ## Inference speed
 
@@ -116,6 +124,23 @@ held-out positions; the 4 rotations gained about 0.8 for about half the cost. No
 re-checked; source `workspace/symmetry_check.py`, `workspace/symmetry_subsets.py`.
 
 ## Training
+
+### Playoff (2026-10-07, checked)
+
+Every pair of four policies played 30 games (colors alternating, komi 7.5, `go_client`'s
+sampling defaults, ladder guard on, no search); KataGo decided the winners. Row's wins
+against the column:
+
+| | b20c256 | b15c192latest | b10c128mb1024 | 2016net | Elo |
+|---|---|---|---|---|---|
+| **b20c256** | - | 25-5 | 22-8 | 26-4 | +482 |
+| **b15c192latest** | 5-25 | - | 23-7 | 30-0 | +369 |
+| **b10c128mb1024** | 8-22 | 7-23 | - | 24-6 | +235 |
+| **2016net** | 4-26 | 0-30 | 6-24 | - | 0 |
+
+Elo is a Bradley-Terry fit over all 180 games (2016net = 0), each gap ±60-80. No two games
+of a pair shared even their first 40 moves. Source: `workspace/playoff/` (`run.sh`,
+`table.py`; match directories in `matches.txt`).
 
 ### Model results
 

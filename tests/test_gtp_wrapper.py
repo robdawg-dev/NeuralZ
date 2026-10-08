@@ -387,6 +387,26 @@ def test_run_gtp_answers_each_command_until_quit(capsys):
     assert next(lines) == "never read"
 
 
+def test_gtp_log_records_each_command_and_reply(tmp_path, capsys):
+    log = tmp_path / "bot.log"
+    lines = iter(["1 name\n2 genmove black", "3 quit"])
+    run_gtp(ScriptedPlayer([(6, 6)]), inpt_fn=lambda: next(lines), name="Loop", version="3",
+            log_path=str(log))
+    entries = [line.split(" ", 2)[2] for line in log.read_text(encoding="utf-8").splitlines()]
+    assert entries == ["> '1 name'", "< '=1 Loop'", "> '2 genmove black'", "< '=2 G13'",
+                       "> '3 quit'", "< '=3'"]
+    assert capsys.readouterr().out == "=1 Loop\n\n=2 G13\n\n=3\n\n"  # play is unchanged
+
+
+def test_an_unwritable_gtp_log_never_stops_the_bot(tmp_path, capsys):
+    lines = iter(["1 name", "2 quit"])
+    run_gtp(ScriptedPlayer(), inpt_fn=lambda: next(lines), name="Loop", version="3",
+            log_path=str(tmp_path / "missing_dir" / "bot.log"))
+    out, err = capsys.readouterr()
+    assert out == "=1 Loop\n\n=2\n\n"
+    assert err.count("gtp log: cannot write") == 1  # reported once, not per line
+
+
 # --- the player's own move count ------------------------------------------------------
 
 def test_own_moves_counts_genmoves_per_color():

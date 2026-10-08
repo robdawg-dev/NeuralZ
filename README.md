@@ -26,8 +26,10 @@ plays.
 | b10c128 | ResNet, 10 blocks × 128 filters | KataGo self-play; 125 epochs, ~23 h | 51.8% / 84.2% | ~4d |
 
 All were trained on one RTX 4070 SUPER. Accuracy is how often the network's top move
-matches KataGo's on held-out games. The three tie on KGS, where a policy-only bot's limits
-(reading, life and death, the endgame) matter more than a few points of accuracy.
+matches KataGo's on held-out games. Head to head the order is clear: in a 30-games-per-pair
+playoff b20c256 beat b15c192 25-5 and b15c192 beat b10c128 23-7 (MEASUREMENTS.md). Their
+KGS ranks are closer, since a policy-only bot's limits (reading, life and death, the
+endgame) matter there as much as a few points of accuracy.
 [SAMPLE_RUN.md](SAMPLE_RUN.md) reproduces the b15c192 run from scratch.
 
 **History.** In 2016, RocAlphaGo's 12-layer, 96-filter CNN trained on GoGoD games reached
@@ -115,6 +117,7 @@ The full walkthrough, from downloading KataGo's games to a trained network, is
 | `interface/` | the GTP engine and the KataGo scorer |
 | `go_server.py`, `go_client.py` | the bot: inference server and GTP client |
 | `play_tests/` | network-vs-network matches, self-play and timing |
+| `tools/` | `game_report.py`: the routine check of the bot's KGS/OGS games (results, repeat opponents, scoring and pass-back problems, dead ladders, where losses were lost) |
 | `deploy/` | the KGS server bundle |
 | `benchmarks/` | model reference captures and heatmap plots |
 | `tests/` | the test suite |

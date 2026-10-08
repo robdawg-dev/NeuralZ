@@ -61,7 +61,9 @@ KGS asks the bot which stones are dead (`final_status_list`). With `katago/` pre
 server answers from KataGo (~30 ms per position on a CPU, after ~4 s at startup); if
 KataGo is missing or fails, the client asks GNU Go; if neither answers, it returns an
 error and kgsGtp leaves the marking to the opponent. In **ranked** games the bot's list is
-binding: kgsGtp won't finish the game until the opponent accepts it.
+binding: kgsGtp won't finish the game until the opponent accepts it. In **free** games it
+is not, and the opponent's marking stands: in early October 2026, five free games the bot
+was winning on the board were scored as losses this way.
 
 Optional: `start_client.sh --cleanup` also supports `kgs-genmove_cleanup`. When an
 opponent disputes the dead stones in a non-Japanese-rules game, KGS then lets play resume
@@ -74,6 +76,12 @@ The client defaults are: sample among moves at least 0.5 as likely as the top mo
 of its own stones is in atari, then always the top move. `--sample-moves 0` makes it fully
 greedy. Options go after the script name; options use hyphens, e.g. `--sample-moves=20`,
 not `--sample_moves=20`. See `.venv/bin/python go_client.py --help`.
+
+To see afterwards exactly what kgsGtp asked and what the bot answered (moves, dead-stone
+lists, scores), give each bot its own `--gtp-log`, e.g.
+`engine=/path/to/this/folder/start_client.sh --gtp-log /path/to/this/folder/logs/NeuralZ05.log`
+(create `logs/` first). Each command and reply is one timestamped line - about 400 lines
+per game - appended for as long as the bot runs.
 
 ## Stopping the bots cleanly
 

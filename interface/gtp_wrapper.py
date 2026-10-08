@@ -9,19 +9,33 @@ from AlphaGo import go
 from AlphaGo.util import save_gamestate_to_sgf
 from builtins import input
 
-# A dedicated log file (rather than stderr) so the command trail survives even if stderr
-# has been redirected to /dev/null - written next to this file regardless of cwd, so it
-# lands in a predictable place no matter where the process is launched from.
-_CMD_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "gtp_commands.log")
 
+class GtpLog(object):
+    """Appends each GTP command (">") and reply ("<") to a file, one line each with the time
+    and process id: the whole exchange with the controller (e.g. kgsGtp), to see afterwards
+    what a game's controller asked and what the bot answered. Its own file rather than
+    stderr, which controllers often discard. path=None logs nothing. A failed write is
+    reported once on stderr and never stops the bot."""
 
-def _log_gtp_command(cmd):
-    try:
-        with open(_CMD_LOG_PATH, "a") as f:
-            f.write("{} pid={} recv: {!r}\n".format(
-                datetime.datetime.now().isoformat(), os.getpid(), cmd))
-    except OSError:
-        pass  # never let logging itself take down the bot
+    def __init__(self, path=None):
+        self.path = path
+        self._failed = False
+
+    def write(self, direction, text):
+        if self.path is None:
+            return
+        try:
+            # opened per line: commands are seconds apart, and a log moved or deleted
+            # while the bot runs simply starts again
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write("{} pid={} {} {!r}\n".format(
+                    datetime.datetime.now().isoformat(timespec="milliseconds"), os.getpid(),
+                    direction, text.rstrip("\n")))
+        except OSError as e:
+            if not self._failed:
+                self._failed = True
+                sys.stderr.write("gtp log: cannot write {}: {}\n".format(self.path, e))
+                sys.stderr.flush()
 
 
 # The gtp package's own BLACK/WHITE constants (1/-1) don't match this engine's
@@ -407,7 +421,9 @@ class GTPGameConnector(object):
 
 
 def run_gtp(player_obj, inpt_fn=None, name="Gtp Player", version="0.0", scorer=None,
-            cleanup=False, stop_file=None, board_size=None):
+            cleanup=False, stop_file=None, board_size=None, log_path=None):
+    """log_path: append the GTP exchange to this file (GtpLog); None logs nothing."""
+    log = GtpLog(log_path)
     gtp_game = GTPGameConnector(player_obj)
     gtp_engine = ExtendedGtpEngine(gtp_game, name, version, scorer=scorer, cleanup=cleanup,
                                    stop_file=stop_file, board_size=board_size)
@@ -425,7 +441,10 @@ def run_gtp(player_obj, inpt_fn=None, name="Gtp Player", version="0.0", scorer=N
         # or multiple commands separated by '\n'
         cmd_list = inpt.split("\n")
         for cmd in cmd_list:
-            # _log_gtp_command(cmd)
+            if cmd.strip():
+                log.write(">", cmd)
             engine_reply = gtp_engine.send(cmd)
+            if engine_reply:
+                log.write("<", engine_reply)
             sys.stdout.write(engine_reply)
             sys.stdout.flush()
