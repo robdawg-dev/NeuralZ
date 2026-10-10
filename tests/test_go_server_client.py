@@ -163,6 +163,57 @@ def test_client_waits_for_a_restarting_server(server):
     assert remote.move_probabilities(GameState()).shape == (361,)
 
 
+def _counting_server(policy, drop_after_reply=False):
+    """A go_server that counts the connections it accepts, and with drop_after_reply closes
+    each one after its first reply without saying so - as a restarted server does to the
+    connection a client was keeping open. (url, connection count list, httpd)."""
+    connections = []
+
+    class Handler(go_server.make_handler(policy)):
+        def setup(self):
+            connections.append(self.client_address)
+            super().setup()
+
+        def _reply(self, *args, **kwargs):
+            super()._reply(*args, **kwargs)
+            if drop_after_reply:
+                self.close_connection = True
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return "http://127.0.0.1:{}".format(httpd.server_address[1]), connections, httpd
+
+
+def test_client_keeps_one_connection_across_moves(server):
+    url, connections, httpd = _counting_server(server[1])
+    try:
+        remote = go_client.RemotePolicy(url)
+        for state in _positions():
+            assert remote.move_probabilities(state).shape == (361,)
+        with pytest.raises(RuntimeError, match="404"):
+            remote._request("/nope", b"some body")
+        assert remote.move_probabilities(GameState()).shape == (361,)  # still usable
+        assert len(connections) == 1
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_client_reconnects_at_once_when_the_server_drops_the_connection(server, capsys):
+    url, connections, httpd = _counting_server(server[1], drop_after_reply=True)
+    try:
+        remote = go_client.RemotePolicy(url, retry_wait=5)
+        t0 = time.time()
+        for state in _positions():
+            assert remote.move_probabilities(state).shape == (361,)
+        assert time.time() - t0 < 5  # no retry wait
+        assert len(connections) == 1 + len(_positions())
+        assert "unreachable" not in capsys.readouterr().err
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 def test_client_never_loads_tensorflow():
     """The memory saving depends on it: each bot process must stay TensorFlow-free."""
     script = ("import sys, go_client; "

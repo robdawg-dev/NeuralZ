@@ -30,6 +30,15 @@ viz = [
 gtp = [
     "pygtp==0.3",
 ]
+# Profiling only (benchmarks/, and setup_cython.py's NEURALZ_CYTHON_PROFILE=1 build):
+# py-spy samples a running process (go_server, a bot); pyinstrument and cProfile + snakeviz
+# give call trees; line_profiler times lines, inside Cython too with the profiling build.
+profile = [
+    "line-profiler>=5.0.2",
+    "py-spy>=0.4.2",
+    "pyinstrument>=5.1.3",
+    "snakeviz>=2.2.2",
+]
 
 [dependency-groups]
 dev = [

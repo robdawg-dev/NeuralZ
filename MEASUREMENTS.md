@@ -46,6 +46,14 @@ for its first 20 own moves, then plays its top move.
 - **Against a human's repeated line** (not re-checked): sampling took a KGS opponent's
   repeated opening line away by ply 30-40 in every game. Source:
   `workspace/sample_ratio/kgs_spring_analysis.py`.
+- **Cost in KGS games** (not re-checked, 2026-10-09): over the bot's first 20 moves in
+  100 post-deploy games, sampling was possible at 39% of positions (2.8 candidates on
+  average); each candidate weighted by its chance of being picked and judged by KataGo
+  against the top move, sampling costs +0.05 points per sampled position, **+0.35 per
+  game**, rising a little later in the window (-0.00 for moves 1-5, +0.08 for 16-20). An
+  earlier pass over the moves actually sampled in 916 games agreed: +0.10 per sampled
+  move, +0.4 per game, none 10+ points worse than the top move. Sources:
+  `tools/sampling_audit.py`, `workspace/sampling_cost/`.
 
 ### No sampling while a stone is in atari
 
@@ -60,6 +68,12 @@ The bot never extends a group in atari into a ladder the engine reads as dead. T
 has the ladder feature as an input plane and still ran dead ladders: 15-19 extensions at 3-8
 points each in spring's wins of 2026-10-02, 03 and 05 (not re-checked; source
 `workspace/sample_ratio/ladder_check.py`, `ladder_features.py`).
+
+Since the deploy, no dead-ladder extension in 916 KGS games (`tools/game_report.py`). One
+known false positive: the guard removed the only good move (NeuralZ02 vs tugkan,
+2026-10-07, move 166) and the bot lost 66 points - the reader saw that the stones could be
+captured, not that capturing them would cost the opponent more. Open; see
+[LADDER_ISSUE.md](LADDER_ISSUE.md).
 
 ### Move limit (`--max-moves 800`)
 
@@ -128,10 +142,60 @@ Docker on the 16-CPU Windows dev PC, CPU only, 2026-10-04. Median ms per call:
 - A compiled `tf.function` call is 2.5-3x faster at batch 1 than an eager Keras call,
   which is mostly per-layer overhead. That is why `go_server.py` compiles every batch size
   at startup (`--eager` turns it off).
-- The client's own work (feature planes, ladder guard, move choice) is ~1.5 ms per move,
-  so there is nothing to gain there.
 - This was measured on the dev machine, not the KGS server: re-run there before choosing
   `--threads`.
+
+### Server settings under load (2026-10-09)
+
+`benchmarks/server_round_trip.py`, native Windows CPU server on the dev PC, b20c256, the
+169 sample positions once each; 8 bots means 8 threads sending back to back (the worst
+case). Median ms per move, and throughput (one run each, so a few ms is noise):
+
+| go_server settings | 1 bot | 8 bots | 8 bots, positions/s |
+|---|---|---|---|
+| defaults (`--max-batch 4 --batch-wait-ms 10`, as deployed) | 92 | 223 | 34.5 |
+| `--threads 8` | 81 | 244 | 32.5 |
+| `--max-batch 8` | 92 | **192** | **40.8** |
+| `--threads 8 --max-batch 8` | 81 | 216 | 36.4 |
+| `--batch-wait-ms 0` | **69** | 218 | 36.0 |
+| `--max-batch 8 --batch-wait-ms 0` | 70 | 261 | 30.1 |
+
+- A lone request waits out the whole batch window: the default costs a bot ~16-23 ms a
+  move whenever no other bot is asking at the same moment. `--batch-wait-ms 0` removes
+  that and loses almost nothing at full load, since requests that arrive during a model
+  call queue up and form a batch anyway.
+- `--max-batch 8` helps only when all 8 bots ask at once, and only together with the
+  batch window (without it the batches come out uneven, ~5).
+- HTTP is now ~0.5 ms a request (1.7 ms under load), with go_client keeping its connection.
+- On KGS the bots mostly wait for their opponents, so requests rarely coincide, which
+  favors `--batch-wait-ms 0`. But the KGS median was 362 ms a move, above even this
+  saturated case, so the KGS machine differs. Measure there before changing
+  `start_server.sh`.
+
+### Whole moves (2026-10-08)
+
+Time from `genmove` to the answer, over a 340-move bot-vs-bot game on the dev PC (checked:
+`workspace/timing/game.log`, read with `tools/gtp_log.py timing`):
+
+- **Native CPU server: about 96 ms a move; GPU server in the container: about 66 ms**
+  (`go_server.py --gpu`, `--batch-wait-ms 0`; TensorFlow has no GPU on native Windows).
+- **The client's work grew with the position, unlike the network call.** Building the
+  48 input planes took 2.5 ms after move 40 but 33 ms after move 200, and the ladder guard
+  0.2 ms and 3.5 ms; the network call stays ~57-60 ms. The cause was not the reading
+  itself: every ply of a ladder read (`try_stone`) recomputed the whole legal-move list on
+  entry and exit, each point checked against the game's history for superko, which the
+  bot's board enforces - so the cost grew with both the reading and the game's length.
+  **Fixed 2026-10-09:** the ladder reader skips that recompute (it only uses
+  `is_legal_move`); planes, guard decisions and legal moves are byte-identical on all 169
+  sample positions. `benchmarks/move_time.py` (sample positions, superko on), before ->
+  after: planes median 13.2 -> 2.2 ms at moves 181-240 (p90 35.7 -> 3.4), worst position
+  104 -> 5 ms; ladder guard p90 6.6 -> 0.4 ms. The client's work is now ~1-3 ms a move
+  throughout the game.
+- **The client keeps its connection to the server open (2026-10-09).** A new connection
+  per move cost ~12 ms: round trip median 82 -> 70 ms on the native CPU server (169
+  positions x 3), i.e. now essentially the model call.
+- On the KGS server (NeuralZ02's log, 2026-10-08): median 362 ms a move; KataGo-searched
+  moves (border and cleanup moves, 32 visits) about 3 s each.
 
 ### Symmetry averaging (`--symmetries`)
 
@@ -158,6 +222,22 @@ Elo is a Bradley-Terry fit over all 180 games (2016net = 0), each gap ±60-80. N
 of a pair shared even their first 40 moves. Source: `workspace/playoff/` (`run.sh`,
 `table.py`; match directories in `matches.txt`).
 
+### Other comparisons (2026-10-09, not re-checked)
+
+Neither replaces the playoff - only games, and in the end games against people, measure
+strength:
+
+- **Agreement with professional moves** (`tools/pro_agreement.py`, 11 professional games
+  from `workspace/famous/real/`, 2,605 moves): top-1 / top-5 - b20c256 51.3% / 82.9%,
+  b15c192latest 50.6% / 82.6%, b10c128mb1024 49.1% / 81.2%, **2016net 50.0% / 82.6%**.
+  The 2016 network, trained on human games, matches professionals as often as b20c256,
+  which beats it 26-4: networks trained on KataGo self-play imitate KataGo, not humans.
+- **Tactics benchmark** (`tools/tactics_bench.py`, `tools/data/tactics.json`: 57 positions
+  from the bot's 197 post-deploy losses where its move lost 20+ points - 45 blunders, 12
+  ignored fights): right move found - b20c256 0 (these are its own mistakes), b15c192latest
+  6, b10c128mb1024 7, 2016net 10; ignored fights 0-1 of 12 for every network. With the
+  ladder guard off, b20c256 gets 1 (the false positive above).
+
 ### Model results
 
 Checked against each run's `metadata.json`:
@@ -178,3 +258,27 @@ Recorded where the setting is defined; not re-checked:
   epoch-to-epoch validation-loss noise, so noise alone kept resetting the patience count.
 - **`--plateau-factor 0.5`**: Keras's default of 0.1 was harsher than training here
   tolerated well.
+
+## On KGS
+
+### Results by handicap (games of 2026-10-06 to 08, checked)
+
+916 games after the KataGo passing deploy, 890 finished: **693-197 (78%)**, every loss on
+points. KataGo's expected lead for the weaker side at the first move, and the bot's
+results, over the 864 games where the bot gave the handicap or none (7-9 stones: 14
+games, not shown; source: `workspace/presentation/handicap_data.json`, from
+`handicap_data.py`):
+
+| Handicap | Games | Weaker side's expected lead | Bot won |
+|---|---|---|---|
+| even | 129 | +1 | 93% |
+| 2 | 32 | +18 | 69% |
+| 3 | 141 | +31 | 94% |
+| 4 | 130 | +43 | 86% |
+| 5 | 226 | +58 | 74% |
+| 6 | 192 | +72 | 62% |
+
+Each stone is worth about 13 points. In its 4-6 stone losses the bot wins back most of the
+handicap (median start -43 to -72, end -6 to -12) but runs out of board; even and small
+handicap losses come from big mistakes instead, 5-6 moves of 10+ points per game
+(`tools/game_report.py` on the same games).

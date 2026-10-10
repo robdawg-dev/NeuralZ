@@ -16,6 +16,9 @@ cdef bool is_ladder_escape_move(GameState state, group_ptr_t prey, location_t mo
        - given move is legal
        - depth >= 0
 
+       Each ply skips try_stone's legal-move-list recompute (update_legal=False): the reader
+       only calls is_legal_move, which reads the board directly.
+
        Mutates and restores 'state' in place via try_stone at every ply rather than copying
        it, since each recursive call is nested inside the caller's 'with state.try_stone()'
        block and is fully undone once that block exits. Callers at the top of a ladder search
@@ -31,7 +34,7 @@ cdef bool is_ladder_escape_move(GameState state, group_ptr_t prey, location_t mo
         return True
 
     # Try move and check results.
-    with state.try_stone(move):
+    with state.try_stone(move, True, False):
         prey = state.board[prey_loc]
 
         # Case 1: prey has >= 3 liberties after move, in which case it escaped.
@@ -79,7 +82,7 @@ cdef bool is_ladder_capture_move(GameState state, group_ptr_t prey, location_t m
         return False
 
     # Try the move and check results
-    with state.try_stone(move):
+    with state.try_stone(move, True, False):
         prey = state.board[prey_loc]
 
         # Case 1: prey has >= 2 liberties after move, in which case it escaped.

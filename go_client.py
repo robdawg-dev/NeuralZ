@@ -9,12 +9,12 @@ in play_tests/match_networks.py; RemotePolicy stands in for the network: it buil
 position's feature planes here and asks the server for the move probabilities.
 """
 import argparse
+import http.client
 import json
 import os
 import sys
 import time
-import urllib.error
-import urllib.request
+import urllib.parse
 
 import numpy as np
 
@@ -27,13 +27,19 @@ from interface.gtp_wrapper import run_gtp
 class RemotePolicy(object):
     """The policy interface ProbabilisticPolicyPlayer uses (eval_state), answered by
     go_server.py: the feature list comes from the server's /info, so the planes built here
-    always match the served model."""
+    always match the served model. Keeps one connection open to the server across moves
+    (a new one per move cost ~10 ms), so one instance is for one thread."""
 
     def __init__(self, server, timeout=30.0, server_wait=120.0, retry_wait=1.0):
         self.server = server.rstrip("/")
         self.timeout = timeout
         self.server_wait = server_wait
         self.retry_wait = retry_wait
+        url = urllib.parse.urlsplit(self.server)
+        self._connection_class = (http.client.HTTPSConnection if url.scheme == "https"
+                                  else http.client.HTTPConnection)
+        self._netloc, self._base = url.netloc, url.path
+        self._connection = None
         self.info = json.loads(self._request("/info"))
         self.board_size = self.info["board_size"]
         self.preprocessor = Preprocess(self.info["features"], size=self.board_size)
@@ -46,20 +52,31 @@ class RemotePolicy(object):
         """GET (body None) or POST to the server, retrying a refused or failed connection
         for up to server_wait seconds - long enough for go_server to restart (TensorFlow
         import, model load, compiling its calls) without costing a bot its game. A few
-        retries over ~6 s were not: the bot's process ended and kgsGtp left the game."""
+        retries over ~6 s were not: the bot's process ended and kgsGtp left the game.
+
+        The connection is kept open between requests. One that fails after serving earlier
+        requests - the server restarted, or closed it - is reopened and the request resent
+        at once (every request is safe to repeat) unless it timed out; other failures wait
+        and retry as above."""
         deadline = time.monotonic() + self.server_wait
         delay, warned = self.retry_wait, False
         while True:
+            reused = self._connection is not None
+            if not reused:
+                self._connection = self._connection_class(self._netloc, timeout=self.timeout)
             try:
-                request = urllib.request.Request(
-                    self.server + path, data=body,
-                    headers={"Content-Type": "application/octet-stream"} if body else {})
-                with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                    return response.read()
-            except urllib.error.HTTPError as e:
-                raise RuntimeError("go_server {} -> {}: {}".format(
-                    path, e.code, e.read().decode("utf-8", "replace"))) from e
-            except (urllib.error.URLError, OSError) as e:
+                if body is None:
+                    self._connection.request("GET", self._base + path)
+                else:
+                    self._connection.request("POST", self._base + path, body=body, headers={
+                        "Content-Type": "application/octet-stream"})
+                response = self._connection.getresponse()
+                reply = response.read()
+            except (http.client.HTTPException, OSError) as e:
+                self._connection.close()
+                self._connection = None
+                if reused and not isinstance(e, TimeoutError):
+                    continue
                 if time.monotonic() + delay > deadline:
                     raise RuntimeError("go_server at {} unreachable (gave up after {:.0f} s): "
                                        "{}".format(self.server, self.server_wait, e)) from e
@@ -71,6 +88,11 @@ class RemotePolicy(object):
                     warned = True
                 time.sleep(delay)
                 delay = min(delay * 2, 5.0)
+                continue
+            if response.status != 200:
+                raise RuntimeError("go_server {} -> {}: {}".format(
+                    path, response.status, reply.decode("utf-8", "replace")))
+            return reply
 
     def move_probabilities(self, state):
         """The served network's probabilities for every board point, (size * size,)."""

@@ -107,3 +107,25 @@ starting the bots again: while it exists they accept no games. (`go_client.py
 
 Clients wait up to 2 minutes for a restarting server (`--server-wait`), so the server
 alone can also be restarted while bots are playing - their clocks keep running meanwhile.
+
+## Measuring speed
+
+To choose `start_server.sh`'s settings (`--threads`, `--max-batch`, `--batch-wait-ms`)
+for this machine, time a test server under the bots' load. Do it while the bots are
+stopped (`touch STOP`): a second server competes with the live one for the CPU, and both
+measurements would suffer.
+
+```
+./start_server.sh --port 5006 --batch-wait-ms 0        # the settings to try
+.venv/bin/python benchmarks/server_round_trip.py --server http://127.0.0.1:5006 --bots 8
+.venv/bin/python benchmarks/server_round_trip.py --server http://127.0.0.1:5006 --bots 1
+```
+
+`--bots` is how many bots ask at once: the number of bots is the worst case, 1 the usual
+one, since bots mostly wait for their opponents. Each run prints median milliseconds per
+move split into batch wait, model call and HTTP, and appends to
+`benchmarks/results/server_round_trip.jsonl`. Stop the test server (Ctrl-C) and repeat
+with other settings.
+
+How long the bots took in real games, from a bot's `--gtp-log` folder:
+`.venv/bin/python tools/gtp_log.py timing <log file>`.

@@ -522,7 +522,8 @@ cdef class GameState:
 
         return new_ko
 
-    cpdef TemporaryMove try_stone(self, location_t location, bool prepare_next=True):
+    cpdef TemporaryMove try_stone(self, location_t location, bool prepare_next=True,
+                                  bool update_legal=True):
         """Analogous to add_stone() for use in a with-statement. Automatically undoes the given move
            when the with-statement exits.
 
@@ -533,9 +534,12 @@ cdef class GameState:
                    print state.get_history()[-1]  # prints loc2
                # Here, state is returned to its value to before the with statement.
                print state.get_history()[-1]  # prints loc1
+
+           update_legal=False leaves get_legal_moves() stale inside the block (is_legal_move
+           is still exact); it is correct again once the block exits.
         """
 
-        return TemporaryMove(self, location, prepare_next)
+        return TemporaryMove(self, location, prepare_next, update_legal)
 
     cpdef list get_legal_moves(self, bool include_eyes=True):
         """Return a list with all legal moves as tuples (in/excluding eyes)
@@ -1090,12 +1094,14 @@ cdef class TemporaryMove:
        with __enter__ and __exit__
     """
 
-    def __init__(self, GameState state, location_t move, bool prepare_next):
+    def __init__(self, GameState state, location_t move, bool prepare_next,
+                 bool update_legal=True):
         self.state = state
         self.move = move
         self.neighbors_friendly = group_set_t()
         self.neighbors_opponent = group_set_t()
         self.prepare_next = prepare_next
+        self.update_legal = update_legal
 
     def __enter__(self):
         """Called when entering 'with' statement. Execute the given move and record necessary
@@ -1126,7 +1132,8 @@ cdef class TemporaryMove:
             self.state.moves_history.push_back(self.move)
             self.state.moves_colors.push_back(self.player_color)
             self.state.swap_players()
-            self.state.update_legal_moves()
+            if self.update_legal:
+                self.state.update_legal_moves()
         else:
             # Only add the stone and don't perform further updates.
             self.state.add_stone(self.move)
@@ -1229,7 +1236,8 @@ cdef class TemporaryMove:
             self.state.swap_players()
 
             # Restore set of legal moves
-            self.state.update_legal_moves()
+            if self.update_legal:
+                self.state.update_legal_moves()
 
 
 class IllegalMove(Exception):

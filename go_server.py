@@ -87,6 +87,12 @@ class _Request(object):
         self.done = threading.Event()
         self.probs = None
         self.error = None
+        # for the X-NeuralZ-Timing reply header: when it was queued and its batch started,
+        # how long the batch's model call took, and how many positions shared it
+        self.queued = time.perf_counter()
+        self.started = None
+        self.model_ms = None
+        self.batch = None
 
 
 class BatchingPolicy(object):
@@ -134,12 +140,18 @@ class BatchingPolicy(object):
 
     def predict(self, planes):
         """Move probabilities for one position (blocks until its batch has run)."""
+        return self.predict_timed(planes)[0]
+
+    def predict_timed(self, planes):
+        """(probabilities, {"queue": ms waiting for its batch, "model": ms of the batch's
+        model call, "batch": positions in that batch})."""
         request = _Request(planes)
         self._queue.put(request)
         request.done.wait()
         if request.error is not None:
             raise request.error
-        return request.probs
+        return request.probs, {"queue": (request.started - request.queued) * 1000,
+                               "model": request.model_ms, "batch": request.batch}
 
     def _compile(self):
         """A compiled model call for each batch size the worker can form - powers of two up
@@ -196,10 +208,14 @@ class BatchingPolicy(object):
                     batch.append(self._queue.get(timeout=self.batch_wait))
                 except queue.Empty:
                     break
+            started = time.perf_counter()
             try:
                 probs = self._run([r.planes for r in batch])
+                model_ms = (time.perf_counter() - started) * 1000
                 for request, p in zip(batch, probs):
                     request.probs = p
+                    request.started = started
+                    request.model_ms, request.batch = model_ms, len(batch)
             except Exception as e:  # noqa: BLE001 - reported back to every waiting client
                 for request in batch:
                     request.error = e
@@ -213,10 +229,12 @@ def make_handler(policy, scorer=None):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
-        def _reply(self, status, body, content_type):
+        def _reply(self, status, body, content_type, headers=None):
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
 
@@ -230,27 +248,35 @@ def make_handler(policy, scorer=None):
                 self._error(404, "unknown path {}".format(self.path))
 
         def do_POST(self):
+            # read the body first, whatever the path: clients reuse the connection, so an
+            # unread body would be taken for the next request
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             if self.path in ("/final_status", "/cleanup_move", "/border_move"):
-                self._judge()
+                self._judge(body)
                 return
             if self.path != "/policy":
                 self._error(404, "unknown path {}".format(self.path))
                 return
-            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            t0 = time.perf_counter()
             try:
                 planes = policy.decode(body)
             except ValueError as e:
                 self._error(400, str(e))
                 return
+            decode_ms = (time.perf_counter() - t0) * 1000
             try:
-                probs = policy.predict(planes)
+                probs, timing = policy.predict_timed(planes)
             except Exception as e:  # noqa: BLE001
                 self._error(500, "inference failed: {}".format(e))
                 return
-            self._reply(200, probs.tobytes(), "application/octet-stream")
+            # where the server's time went, for benchmarks/server_round_trip.py; clients
+            # (go_client) ignore it
+            header = "decode={:.2f};queue={:.2f};model={:.2f};batch={}".format(
+                decode_ms, timing["queue"], timing["model"], timing["batch"])
+            self._reply(200, probs.tobytes(), "application/octet-stream",
+                        {"X-NeuralZ-Timing": header})
 
-        def _judge(self):
-            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        def _judge(self, body):
             if scorer is None:
                 self._error(503, "this go_server runs without --katago")
                 return

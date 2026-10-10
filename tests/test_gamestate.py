@@ -613,6 +613,25 @@ class TestTemporaryMove(unittest.TestCase):
 
             self.assertEqual(hash1, hash2)
 
+    def test_skip_legal_update(self):
+        # update_legal=False (the ladder reader's mode): is_legal_move inside the block agrees
+        # with a real do_move, and the state - legal list included - is restored on exit.
+        # Black's (1, 1) captures the white stone at (0, 1).
+        gs = GameState(size=7, enforce_superko=True)
+        for move in [(0, 0), (0, 1), (0, 2), (5, 5)]:
+            gs.do_move(move)
+        original = gs.copy()
+        for move in [(1, 1), (3, 3)]:
+            played = gs.copy()
+            played.do_move(move)
+            with gs.try_stone(flatten_idx(move, 7), True, False):
+                self.assertEqual(gs.get_current_player(), played.get_current_player())
+                self.assertTrue(gs.is_board_equal(played))
+                self.assertEqual(gs.get_captures_white(), played.get_captures_white())
+                for loc in range(49):
+                    self.assertEqual(gs.is_legal_move(loc), played.is_legal_move(loc), loc)
+            self.equality_checks(original, gs)
+
 
 if __name__ == '__main__':
     unittest.main()

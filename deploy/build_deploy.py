@@ -44,6 +44,15 @@ RUNTIME_FILES = [
     "interface/gtp_wrapper.py",
     "interface/katago_scorer.py",
 ]
+# For measuring speed on the server (README: "Measuring speed"): the server benchmark,
+# its sample positions, and the GTP log reader. Not needed to play.
+MEASURE_FILES = [
+    "benchmarks/server_round_trip.py",
+    "benchmarks/move_time.py",
+    "benchmarks/sample_positions.json",
+    "tools/gtp_log.py",
+    "tools/katago_util.py",
+]
 TEMPLATE_FILES = ["README.md", "install.sh", "check_deploy.py", "check_running.py",
                   "start_server.sh", "start_client.sh", "katago_analysis.cfg"]
 # KataGo for end-of-game judging (go_server --katago): its Linux CPU (Eigen) binary and a
@@ -152,10 +161,10 @@ def main():
         shutil.rmtree(out)
     os.makedirs(out)
 
-    for rel in RUNTIME_FILES:
+    for rel in RUNTIME_FILES + MEASURE_FILES:
         src = os.path.join(REPO, rel)
         if not os.path.isfile(src):
-            fail("missing runtime file {}".format(rel))
+            fail("missing file {}".format(rel))
         dst = os.path.join(out, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy2(src, dst)

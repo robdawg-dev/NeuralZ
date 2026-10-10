@@ -201,7 +201,8 @@ cdef class GameState:
        or -1 if there is none.
     """
 
-    cpdef TemporaryMove try_stone(self, location_t location, bool prepare_next=*)
+    cpdef TemporaryMove try_stone(self, location_t location, bool prepare_next=*,
+                                  bool update_legal=*)
     """Analogous to add_stone() for use in a with-statement. Automatically undoes the given move
        when the with-statement exits.
 
@@ -302,3 +303,9 @@ cdef class TemporaryMove:
     # this flag is True, it update history and switches to the next player. If it is False, it
     # simply adds the stone and makes no further updates.
     cdef bool prepare_next
+
+    # When False (with prepare_next), skip recomputing state.legal_moves on enter and exit. For
+    # callers that only use is_legal_move() inside the block, such as the ladder reader: the
+    # recompute checks every point (with superko, against the game's history) twice per ply,
+    # and the cached list is unchanged afterwards since exit restores the position exactly.
+    cdef bool update_legal

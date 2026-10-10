@@ -423,6 +423,18 @@ docker compose run --rm gpu python tools/plot_heatmaps.py <some game>.sgf worksp
     --weights workspace/runs/restower_b15c192/weights.00094.weights.h5
 ```
 
+**Compare it with other networks.** Add it to `play_tests/policy_loading.py` under a name,
+then play it against the others and let KataGo decide the games (the built-in count
+misjudges dead stones) - `tools/playoff.py` plays every pair and reports a crosstable and
+Elo (it needs KataGo: `KATAGO_EXE`, `KATAGO_MODEL`, `KATAGO_CONFIG`; see
+`tools/README.md`); `tools/tactics_bench.py run --model <name>` scores it on positions
+where the deployed bot went badly wrong:
+
+```bash
+uv run python tools/playoff.py run <your model> b15c192latest --games 30 --docker --gpu
+uv run python tools/tactics_bench.py run --model <your model>
+```
+
 **Train a different size, or on a smaller GPU.** Create another model with `make_model`
 (e.g. `--blocks 10 --filters 128` trains faster), or use a smaller `--minibatch`. Either way
 the learning rate needs re-tuning. An LR range test sweeps the learning rate upward
