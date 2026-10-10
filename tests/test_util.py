@@ -186,7 +186,7 @@ def test_save_round_trips_a_handicap_game(tmp_path):
 
 class _BoardView:
     """The (size, [i][j]) board interface plot_network_output expects - as built by
-    benchmarks/_plot_sgf_heatmaps.py."""
+    tools/plot_heatmaps.py."""
 
     def __init__(self, state):
         self.size = state.get_size()

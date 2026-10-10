@@ -99,6 +99,11 @@ starting the bots again: while it exists they accept no games. (`go_client.py
    run `./install.sh` again.
 3. Restart the server (`start_server.sh`).
 4. `rm STOP`, then start each bot's kgsGtp again.
+5. Check the running setup: `.venv/bin/python check_running.py --client-args "<the
+   arguments after start_client.sh in a bot's engine= line>"`. It confirms the server
+   answers (with KataGo and the current version's endpoints), that no `STOP` file is left,
+   and what a bot started with those arguments advertises (e.g. `kgs-genmove_cleanup` with
+   `--cleanup`), and that its `--gtp-log` folder is writable. Safe to run any time.
 
 Clients wait up to 2 minutes for a restarting server (`--server-wait`), so the server
 alone can also be restarted while bots are playing - their clocks keep running meanwhile.

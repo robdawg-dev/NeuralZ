@@ -44,8 +44,8 @@ RUNTIME_FILES = [
     "interface/gtp_wrapper.py",
     "interface/katago_scorer.py",
 ]
-TEMPLATE_FILES = ["README.md", "install.sh", "check_deploy.py", "start_server.sh",
-                  "start_client.sh", "katago_analysis.cfg"]
+TEMPLATE_FILES = ["README.md", "install.sh", "check_deploy.py", "check_running.py",
+                  "start_server.sh", "start_client.sh", "katago_analysis.cfg"]
 # KataGo for end-of-game judging (go_server --katago): its Linux CPU (Eigen) binary and a
 # small network, copied into the bundle's katago/ when present (git-ignored, like models)
 KATAGO_DIR = os.path.join(REPO, "play_tests", "models", "katago")

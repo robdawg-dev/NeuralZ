@@ -25,6 +25,18 @@ Two cautions if you ever read them as a reference:
 - `preprocessing_python.py` still imports `keras.backend`, which the rest of the project no
   longer uses this way.
 
+## KataGo verification by evalsgf
+
+| file | superseded by |
+|---|---|
+| `katago_verify.py` | `tools/match_winners.py` |
+
+Re-scored a match with `katago evalsgf -print-score-now` per game, with a GTP config and
+a KataGo install path from an earlier machine. `tools/match_winners.py` does the same job
+through the analysis engine in one batch (Tromp-Taylor rules, the match's komi) and takes
+KataGo from the command line or the environment. Moved here from `play_tests/`; only
+its usage line changed.
+
 ## Single-process GTP bot
 
 | file | superseded by |

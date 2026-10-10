@@ -7,7 +7,7 @@ dependencies = [
     "h5py>=3.11.0,<3.15.0",
     # Pinned rather than left to float with TF's own "keras>=3.12.0": a Keras change can
     # alter training behavior and model loading, so each bump is verified on its own
-    # (benchmarks/_capture_policy_reference.py). The trained models were produced with
+    # (tools/policy_reference.py). The trained models were produced with
     # 3.13.2.
     "keras==3.15.1",
     "sgf==0.5",
@@ -20,7 +20,7 @@ dependencies = [
 gpu = [
     "tensorflow[and-cuda]==2.21.0; sys_platform == 'linux'",
 ]
-# plot_network_output (AlphaGo/util.py) and benchmarks/_plot_sgf_heatmaps.py only -
+# plot_network_output (AlphaGo/util.py) and tools/plot_heatmaps.py only -
 # never imported by the trainer or any play_tests/ script that doesn't visualize.
 viz = [
     "matplotlib>=3.10.9",

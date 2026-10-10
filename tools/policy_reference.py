@@ -6,13 +6,15 @@ Positions: fixed plies from the first games of each type in a selection list (te
 the model never trained on them), including handicap games.
 
     # in the OLD environment (from the repo root)
-    python -m benchmarks._capture_policy_reference capture MODEL WEIGHTS ref_cpu.npz --device cpu
+    python tools/policy_reference.py capture MODEL WEIGHTS ref_cpu.npz --device cpu
     # in the NEW environment
-    python -m benchmarks._capture_policy_reference compare MODEL WEIGHTS ref_cpu.npz --device cpu
+    python tools/policy_reference.py compare MODEL WEIGHTS ref_cpu.npz --device cpu
 """
 import argparse
 import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _parse_args():

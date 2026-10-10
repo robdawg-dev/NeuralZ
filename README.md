@@ -100,8 +100,9 @@ The full walkthrough, from downloading KataGo's games to a trained network, is
    latest checkpoint exactly where it stopped: optimizer state, data position and plateau
    counters included.
 6. **Evaluate**: `play_tests/match_networks.py` plays two networks against each other;
-   score the final positions with KataGo (`play_tests/katago_verify.py`) rather than the
-   built-in count, which misjudges dead stones.
+   decide the winners with KataGo (`tools/match_winners.py`) rather than the built-in
+   count, which misjudges dead stones. `tools/playoff.py` does both for every pair of a
+   list of networks and reports a crosstable and Elo.
 
 [DATA_PIPELINE.md](DATA_PIPELINE.md) explains what each data stage decides and why.
 
@@ -117,9 +118,8 @@ The full walkthrough, from downloading KataGo's games to a trained network, is
 | `interface/` | the GTP engine and the KataGo scorer |
 | `go_server.py`, `go_client.py` | the bot: inference server and GTP client |
 | `play_tests/` | network-vs-network matches, self-play and timing |
-| `tools/` | `game_report.py`: the routine check of the bot's KGS/OGS games (results, repeat opponents, scoring and pass-back problems, dead ladders, where losses were lost) |
+| `tools/` | command-line tools: game reports and reviews, network playoffs and benchmarks, GTP logs, model releases ([list](tools/README.md)) |
 | `deploy/` | the KGS server bundle |
-| `benchmarks/` | model reference captures and heatmap plots |
 | `tests/` | the test suite |
 | `deprecated/` | superseded code, kept for reference ([README](deprecated/README.md)) |
 
@@ -132,7 +132,7 @@ The full walkthrough, from downloading KataGo's games to a trained network, is
 - **Lint:** `flake8` (`.flake8`) and `uv run cython-lint AlphaGo` for the Cython files.
 - **Dependencies** are pinned in `uv.lock`. The Docker image builds from it, so the
   container and a native environment run the same versions. Keras is pinned exactly:
-  check a model's outputs across an upgrade with `benchmarks/_capture_policy_reference.py`.
+  check a model's outputs across an upgrade with `tools/policy_reference.py`.
 
 [MEASUREMENTS.md](MEASUREMENTS.md) collects the measurements behind the defaults: the
 sampling settings, the KataGo scorer, inference speed and more.

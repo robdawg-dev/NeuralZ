@@ -414,13 +414,13 @@ network. The bundle's README covers installing it and the `kgsGtp` setup.
 ## 8. Optional extras
 
 **See what the network is thinking.** Render its move probabilities as a heatmap for every
-position of a game:
+position of a game, or only chosen ones (`--moves`); `--all-points` labels every legal
+point and `--cmap` picks the colors:
 
 ```bash
-docker compose run --rm gpu python -m benchmarks._plot_sgf_heatmaps \
-    workspace/models/model_restower_b15c192_convnorm.json \
-    workspace/runs/restower_b15c192/weights.00094.weights.h5 \
-    <some game>.sgf workspace/heatmaps
+docker compose run --rm gpu python tools/plot_heatmaps.py <some game>.sgf workspace/heatmaps \
+    --json workspace/models/model_restower_b15c192_convnorm.json \
+    --weights workspace/runs/restower_b15c192/weights.00094.weights.h5
 ```
 
 **Train a different size, or on a smaller GPU.** Create another model with `make_model`

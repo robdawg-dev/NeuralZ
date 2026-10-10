@@ -31,20 +31,19 @@ import collections
 import datetime
 import glob
 import hashlib
-import json
 import os
 import re
 import statistics
-import subprocess
 import sys
-import tempfile
-import threading
 import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-COLS = "abcdefghijklmnopqrs"
-GTP_COLS = "ABCDEFGHJKLMNOPQRST"
+# GTP_COLS and run_katago are re-exported for scripts that import them from here
+from katago_util import COLS, GTP_COLS, add_katago_args, gtp, katago_command  # noqa: E402,F401
+from katago_util import run as run_katago  # noqa: E402
+
 CONTESTED_MAX = 10  # as SETTLED_MAX_CONTESTED in interface/gtp_wrapper.py
 BIG_DROP = 10.0
 FIGHT_SWING = 30.0
@@ -217,11 +216,6 @@ def archive_types(folder):
 
 # --- KataGo ---------------------------------------------------------------------------------
 
-def gtp(point, size=19):
-    if not point:
-        return "pass"
-    return GTP_COLS[COLS.index(point[0])] + str(size - COLS.index(point[1]))
-
 
 def katago_query(game, turns, visits, ownership=False):
     moves = [[c, gtp(p)] for c, p in game["line"]]
@@ -232,33 +226,6 @@ def katago_query(game, turns, visits, ownership=False):
     if ownership:
         q["includeOwnership"] = True
     return q
-
-
-def run_katago(command, queries, label=""):
-    """{(query id, turn): KataGo's reply} for every analyzed turn. Black's view throughout."""
-    # KataGo's example configs log to ./analysis_logs: keep that out of the working tree
-    log_dir = os.path.join(tempfile.gettempdir(), "game_report_katago_logs")
-    proc = subprocess.Popen(command + ["-override-config",
-                                       "reportAnalysisWinratesAs=BLACK,logDir=" + log_dir],
-                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, text=True)
-
-    def feed():  # from a thread: writing everything first deadlocks on a full stdout pipe
-        for q in queries:
-            proc.stdin.write(json.dumps(q) + "\n")
-        proc.stdin.close()
-    threading.Thread(target=feed, daemon=True).start()
-    total = sum(len(q["analyzeTurns"]) for q in queries)
-    out = {}
-    for line in proc.stdout:
-        r = json.loads(line)
-        if "error" in r or "warning" in r:
-            continue
-        out[(r["id"], r["turnNumber"])] = r
-        if label and len(out) % 2000 == 0:
-            sys.stderr.write("  {} {}/{}\n".format(label, len(out), total))
-    proc.wait()
-    return out
 
 
 def contested(reply):
@@ -518,9 +485,7 @@ def main(argv=None):
     parser.add_argument("--since", help="only games on or after this date (YYYY-MM-DD)")
     parser.add_argument("--bot-prefix", default="NeuralZ")
     parser.add_argument("--archive-pages", help="folder of saved KGS archive pages (game types)")
-    parser.add_argument("--katago", default=os.environ.get("KATAGO_EXE"))
-    parser.add_argument("--katago-model", default=os.environ.get("KATAGO_MODEL"))
-    parser.add_argument("--katago-config", default=os.environ.get("KATAGO_CONFIG"))
+    add_katago_args(parser)
     parser.add_argument("--visits", type=int, default=30, help="per loss position. Default: 30")
     parser.add_argument("--quick", action="store_true", help="skip the loss analysis")
     parser.add_argument("--out", help="also write the report to this file")
@@ -530,10 +495,7 @@ def main(argv=None):
     games = load_games(args.paths, args.bot_prefix, args.since)
     if not games:
         sys.exit("game_report: no games by {}* found".format(args.bot_prefix))
-    katago = None
-    if args.katago and args.katago_model and args.katago_config:
-        katago = [args.katago, "analysis", "-config", args.katago_config,
-                  "-model", args.katago_model]
+    katago = katago_command(args)
     types = archive_types(args.archive_pages) if args.archive_pages else None
     lines = []
 
