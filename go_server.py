@@ -43,17 +43,21 @@ per position than an eager Keras call, which spends most of its time on per-laye
 (57-62 vs 143-173 ms at batch 1; MEASUREMENTS.md, "Inference speed"). --eager uses the
 plain Keras call instead.
 
-CPU-only: the GPU is hidden before TensorFlow loads.
+CPU-only by default: the GPU is hidden before TensorFlow loads. --gpu leaves it visible
+(TensorFlow sees a GPU only on Linux, e.g. in the Docker container - not on native
+Windows); a KataGo started by the server then sees it too.
 """
 import os
+import sys
 
-# Must happen before TensorFlow is imported (by AlphaGo.models.nn_util below).
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+# Must happen before TensorFlow is imported (by AlphaGo.models.nn_util below) - so --gpu
+# is read straight from sys.argv rather than waiting for argparse.
+if "--gpu" not in sys.argv:
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 import argparse  # noqa: E402
 import json  # noqa: E402
 import queue  # noqa: E402
-import sys  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # noqa: E402
@@ -291,6 +295,9 @@ def build_parser():
     parser.add_argument("--host", default="127.0.0.1",
                         help="Address to listen on. Default: 127.0.0.1 (this machine only)")
     parser.add_argument("--port", type=int, default=5005, help="Default: 5005")
+    parser.add_argument("--gpu", action="store_true",
+                        help="Run the network on the GPU (Linux only, e.g. in the Docker "
+                             "container). Default: CPU")
     parser.add_argument("--symmetries", type=int, choices=SYMMETRY_CHOICES, default=1,
                         help="Board symmetries each position is evaluated under, the answers "
                              "averaged: 1 (the position as given), 4 (the 4 rotations) or 8 "
@@ -348,9 +355,10 @@ def main(argv=None):
         except Exception as e:  # noqa: BLE001
             sys.exit("go_server: KataGo failed to start: {}".format(e))
     server = ThreadingHTTPServer((args.host, args.port), make_handler(policy, scorer))
-    sys.stderr.write("go_server: serving {} on http://{}:{} ({} planes, {}x{}, symmetries "
-                     "{}, {}; ready in {:.0f} s)\n".format(
-                         os.path.basename(args.model), args.host, args.port, policy.planes,
+    sys.stderr.write("go_server: serving {} on http://{}:{} ({}, {} planes, {}x{}, "
+                     "symmetries {}, {}; ready in {:.0f} s)\n".format(
+                         os.path.basename(args.model), args.host, args.port,
+                         "GPU" if args.gpu else "CPU", policy.planes,
                          policy.board_size, policy.board_size, len(policy.symmetries),
                          "eager calls" if args.eager else "compiled for batches of {}".format(
                              "/".join(str(n) for n in sorted(policy._compiled))),
