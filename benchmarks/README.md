@@ -13,8 +13,6 @@ versions and machines can be compared. Conclusions go in [MEASUREMENTS.md](../ME
 30-280); both scripts use them by default. Rebuild them with
 `move_time.py --build <game folders>`.
 
-The `_restower_*` folders are training runs kept for reference (gitignored).
-
 ## Typical runs
 
 ```

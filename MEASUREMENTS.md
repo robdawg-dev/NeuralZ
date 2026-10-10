@@ -245,7 +245,7 @@ Checked against each run's `metadata.json`:
 | Run | Epochs | Wall time | val loss | Top-1 / top-5 |
 |---|---|---|---|---|
 | `workspace/runs/newres_b20c256` (epoch 67) | 67 × 2.56M positions | 42.9 h | 1.391 | 57.3% / 89.2% |
-| `benchmarks/_restower_b15c192_v4shuf40m_mb1024_lr1p6_seed90001` (epoch 94) | 95 | 38.6 h | 1.484 | 55.6% / 87.4% |
+| `play_tests/models/b15c192latest` (epoch 94; run `_restower_b15c192_v4shuf40m_mb1024_lr1p6_seed90001`) | 95 | 38.6 h | 1.484 | 55.6% / 87.4% |
 | `play_tests/models/b10c128mb1024` (epoch 125) | 125 | 23.3 h | 1.669 | 51.8% / 84.2% |
 
 ### Trainer settings
