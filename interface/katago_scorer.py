@@ -264,13 +264,16 @@ class KataGoScorer(object):
                 "contested": contested,
                 "open": open_points(stones, own, dead, self.size)}
 
-    def cleanup_move(self, stones, color, komi, rules):
+    def cleanup_move(self, stones, color, komi, rules, must_move=False):
         """For color's kgs-genmove_cleanup: "pass" once none of the opponent's stones are
-        dead, else KataGo's best move other than a pass."""
+        dead, else KataGo's best move other than a pass. must_move: a move even with nothing
+        dead - the opponent has just played a stone, and a pass would hand it free moves
+        (opponents disputing a finished game and then attacking the bot's groups while it
+        passed won by 231 points that way)."""
         color = color.upper()
         dead = self.final_status(stones, color, komi, rules)["dead"]
         board = {v.upper(): c.upper() for c, v in stones}
-        if not any(board.get(v) != color for v in dead):
+        if not must_move and not any(board.get(v) != color for v in dead):
             return "pass"
         query = self._position(stones, color, komi, rules, self.cleanup_visits)
         query["avoidMoves"] = [{"player": color, "moves": ["pass"], "untilDepth": 1}]

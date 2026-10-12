@@ -310,20 +310,43 @@ class ExtendedGtpEngine(gtp.Engine):
         words = arguments.split()
         self._game.set_rules(words[0].lower() if words else "chinese")
 
+    def _cleanup_pass(self, color):
+        """KataGo would pass back in cleanup (the opponent passed, nothing of theirs dead):
+        the same check as genmove first. -> the move played: a pass, or a border move; None
+        leaves it to the bot's own move (the board isn't settled, or no usable border move)."""
+        allowed, border_open = self._pass_check(color)
+        if border_open:
+            return self._border_move(color)
+        if allowed is False:
+            return None
+        self._game.make_move(color, gtp.PASS)
+        return gtp.PASS
+
     def _kgs_genmove_cleanup(self, arguments):
-        """Like genmove, but no pass while KataGo judges any of the opponent's stones dead:
-        its move if it can be played here; otherwise (KataGo failed, or a move this engine
-        rejects) the bot's own move, without passing just because the opponent did."""
+        """KGS resumes a finished game this way when the opponent disputes the dead stones
+        (non-Japanese rules). A pass only after the opponent's pass, with none of its stones
+        dead and the same pass check as genmove (a settled board, the bot's border closed).
+        After an opponent's stone, never a pass: KataGo's move (must_move) - an opponent who
+        disputed and then kept playing while the bot passed took 50 of its stones (KGS,
+        2026-10-11). KataGo's move if it can be played here; otherwise (KataGo failed, or a
+        move this engine rejects) the bot's own move, without passing."""
         color = gtp.parse_color(arguments)
         if not color:
             raise ValueError("unknown player: {}".format(arguments))
+        opponent_passed = self._game.last_move_was_pass()
         move = None
         try:
-            vertex = self._scorer.cleanup_move(**self._game.position(color))
-            move = gtp.PASS if vertex.lower() == "pass" else gtp.parse_vertex(vertex)
-            if move is None or not self._game.make_move(color, move):
-                sys.stderr.write("gtp: unusable KataGo cleanup move {}\n".format(vertex))
-                move = None
+            vertex = self._scorer.cleanup_move(**self._game.position(color),
+                                               must_move=not opponent_passed)
+            if vertex.lower() == "pass":
+                move = self._cleanup_pass(color) if opponent_passed else None
+                if not opponent_passed:  # a server from before must_move
+                    sys.stderr.write("gtp: KataGo cleanup passed after a stone\n")
+            else:
+                move = gtp.parse_vertex(vertex)
+                if move is None or not self._game.make_move(color, move):
+                    sys.stderr.write("gtp: unusable KataGo cleanup move {}\n".format(vertex))
+                    move = None
         except Exception as e:  # noqa: BLE001 - fall back to the bot's own move
             sys.stderr.write("gtp: KataGo cleanup failed ({})\n".format(e))
         if move is None:
@@ -411,6 +434,11 @@ class GTPGameConnector(object):
         if self._own_moves.get(color, 0) > 0:
             self._own_moves[color] -= 1
         return True
+
+    def last_move_was_pass(self):
+        """The last move was a pass (at any point in the game)."""
+        history = self._state.get_history()
+        return bool(history) and history[-1] == go.PASS
 
     def opponent_just_passed(self):
         """The last move was a pass, after move 100 - when the player's pass_when_offered

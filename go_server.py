@@ -20,9 +20,10 @@ network) that judges finished games for every bot (interface/katago_scorer.py):
                           "contested", "open"} - contested: points whose owner is still
                           open; open: each color's points a count now would give no one
                           (an unclosed border). The bots check both before passing back.
-    POST /cleanup_move -> body: the same, with "to_move" the bot's color. Reply: JSON
-                          {"move": vertex or "pass"} - a pass only once none of the
-                          opponent's stones are dead (kgs-genmove_cleanup).
+    POST /cleanup_move -> body: the same, with "to_move" the bot's color, and optionally
+                          "must_move": true. Reply: JSON {"move": vertex or "pass"} - a
+                          pass only once none of the opponent's stones are dead, and never
+                          with must_move (kgs-genmove_cleanup).
     POST /border_move  -> body: the same. Reply: JSON {"move": vertex or null} - the move
                           that best closes the bot's open border, played instead of passing.
 
@@ -292,7 +293,8 @@ def make_handler(policy, scorer=None):
                 elif self.path == "/border_move":
                     answer = {"move": scorer.border_move(*args)}
                 else:
-                    answer = {"move": scorer.cleanup_move(*args)}
+                    answer = {"move": scorer.cleanup_move(
+                        *args, must_move=bool(q.get("must_move")))}
             except Exception as e:  # noqa: BLE001
                 self._error(500, "katago failed: {}".format(e))
                 return

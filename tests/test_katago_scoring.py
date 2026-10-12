@@ -134,6 +134,8 @@ def test_cleanup_captures_before_passing(scorer):
     assert scorer.cleanup_move(STONES, "B", 0.5, "chinese") == "A1"
     # White to move: none of Black's stones are dead, so White may pass
     assert scorer.cleanup_move(STONES, "W", 0.5, "chinese") == "pass"
+    # ...unless the opponent has just played a stone: then a move all the same
+    assert scorer.cleanup_move(STONES, "W", 0.5, "chinese", must_move=True) == "A1"
 
 
 def test_katago_errors_and_silence_become_exceptions(scorer):
@@ -256,6 +258,8 @@ def test_client_judges_through_the_server(judging_server):
     assert remote.judges_games
     assert sorted(remote.final_status(STONES, "B", 0.5, "chinese")["dead"]) == ["Q16", "Q17"]
     assert remote.cleanup_move(STONES, "B", 0.5, "chinese") == "A1"
+    assert remote.cleanup_move(STONES, "W", 0.5, "chinese") == "pass"
+    assert remote.cleanup_move(STONES, "W", 0.5, "chinese", must_move=True) == "A1"
 
 
 def test_server_without_katago_says_so(judging_server):
@@ -287,7 +291,7 @@ class FakeScorer(object):
                  border="K11"):
         self.dead, self.cleanup, self.fail = list(dead), cleanup, fail
         self.contested, self.open, self.border = contested, open, border
-        self.asked = []
+        self.asked, self.must_move = [], []
 
     def final_status(self, stones, to_move, komi, rules):
         self.asked.append((stones, to_move, komi, rules))
@@ -303,7 +307,8 @@ class FakeScorer(object):
             raise self.border
         return self.border
 
-    def cleanup_move(self, stones, to_move, komi, rules):
+    def cleanup_move(self, stones, to_move, komi, rules, must_move=False):
+        self.must_move.append(must_move)
         if self.fail:
             raise RuntimeError("katago down")
         return self.cleanup
@@ -369,6 +374,42 @@ def test_cleanup_falls_back_to_the_bots_move_without_passing_on_offer():
     e2 = engine(FakeScorer(fail=True), cleanup=True, player=FixedPlayer())
     e2.send("play b A1")
     assert e2.send("kgs-genmove_cleanup w").strip() == "= B18"
+
+
+def test_cleanup_never_passes_right_after_an_opponents_stone():
+    # the opponent has just played (C3): KataGo is asked for a move even with nothing dead
+    sc = FakeScorer(dead=[], cleanup="E5")
+    e = engine(sc, cleanup=True)
+    assert e.send("kgs-genmove_cleanup w").strip() == "= E5"
+    assert sc.must_move == [True]
+    # a server from before must_move answers "pass" all the same: the bot's own move
+    player = FixedPlayer()
+    e = engine(FakeScorer(dead=[], cleanup="pass"), cleanup=True, player=player)
+    assert e.send("kgs-genmove_cleanup w").strip() == "= B18"
+    assert player.seen == [False]
+
+
+def _cleanup_after_pass(scorer, player):
+    e = ExtendedGtpEngine(GTPGameConnector(player), scorer=scorer, cleanup=True)
+    _long_game(e)  # ends with Black's pass
+    return e.send("kgs-genmove_cleanup w")
+
+
+def test_cleanup_passes_back_on_a_finished_board():
+    sc = FakeScorer(dead=[], cleanup="pass", open=_open(0))
+    assert _cleanup_after_pass(sc, FixedPlayer(move=(10, 9))).strip() == "= PASS"
+    assert sc.must_move == [False]
+
+
+def test_cleanup_checks_the_border_and_the_board_before_passing_back():
+    # border open: KataGo's border move, as in genmove
+    sc = FakeScorer(dead=[], cleanup="pass", open=_open(OPEN_MAX + 1))
+    assert _cleanup_after_pass(sc, FixedPlayer(move=(10, 9))) == "= K11\n\n"
+    # board not settled: the bot's own move, not a pass
+    player = FixedPlayer(move=(10, 9))
+    sc = FakeScorer(dead=[], cleanup="pass", contested=50, open=_open(0))
+    assert _cleanup_after_pass(sc, player) == "= L10\n\n"
+    assert player.seen == [False]
 
 
 # --- passing back only on a finished board ---------------------------------------------

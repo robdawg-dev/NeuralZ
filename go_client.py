@@ -116,9 +116,9 @@ class RemotePolicy(object):
         """Whether the server runs KataGo for the end of the game (go_server --katago)."""
         return bool(self.info.get("katago"))
 
-    def _judge(self, path, stones, to_move, komi, rules):
-        body = json.dumps({"stones": stones, "to_move": to_move, "komi": komi,
-                           "rules": rules}).encode("utf-8")
+    def _judge(self, path, stones, to_move, komi, rules, **extra):
+        body = json.dumps(dict({"stones": stones, "to_move": to_move, "komi": komi,
+                                "rules": rules}, **extra)).encode("utf-8")
         return json.loads(self._request(path, body))
 
     def final_status(self, stones, to_move, komi, rules):
@@ -126,9 +126,11 @@ class RemotePolicy(object):
         "contested", "open"} (see go_server)."""
         return self._judge("/final_status", stones, to_move, komi, rules)
 
-    def cleanup_move(self, stones, to_move, komi, rules):
-        """KataGo's kgs-genmove_cleanup move for to_move (the bot): a vertex, or "pass"."""
-        return self._judge("/cleanup_move", stones, to_move, komi, rules)["move"]
+    def cleanup_move(self, stones, to_move, komi, rules, must_move=False):
+        """KataGo's kgs-genmove_cleanup move for to_move (the bot): a vertex, or "pass" -
+        not with must_move, unless the server predates it."""
+        extra = {"must_move": True} if must_move else {}
+        return self._judge("/cleanup_move", stones, to_move, komi, rules, **extra)["move"]
 
     def border_move(self, stones, to_move, komi, rules):
         """KataGo's move closing to_move's (the bot's) open border: a vertex, or None."""
@@ -165,7 +167,9 @@ def build_parser():
                         help="Support kgs-genmove_cleanup (needs go_server --katago): when the "
                              "opponent disputes the dead stones in a non-Japanese-rules game, "
                              "KGS lets play resume and the bot captures the stones KataGo "
-                             "judges dead before passing. Default: off")
+                             "judges dead. It never passes right after an opponent's stone "
+                             "(KataGo's move instead), and passes after the opponent's pass "
+                             "only with the same checks as a normal pass back. Default: off")
     parser.add_argument("--stop-file", default=os.path.join(
                             os.path.dirname(os.path.abspath(__file__)), "STOP"),
                         help="While this file exists the bot declines new games and exits when "

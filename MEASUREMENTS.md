@@ -126,6 +126,23 @@ its own points open, and otherwise plays the KataGo move that best closes the bo
   points, and 3 wins. Nothing fell between 3 and 9.
 - **Closing** (checked, `workspace/exploits/border_replay.py`): on those boards, with the
   opponent passing every time, the border moves left 0-2 open points after 1-8 moves.
+- **On KGS** (checked, `workspace/kgs_archive/open_border_check.py`: the same test, server
+  network, replayed on every bot pass-back): deployed 2026-10-08 18:17 UTC. In the 965
+  games before it (from 2026-10-06), 11 of 564 pass-backs left the bot's border open, by
+  18-51 points; in the 1,562 games after it (to 10-12), 0 of 943 did (at most 5 open
+  points, once).
+
+### Cleanup after a dispute: never pass after an opponent's stone
+
+When an opponent disputes the dead stones under non-Japanese rules, KGS takes back the two
+passes and resumes the game with `kgs-genmove_cleanup` (ranked games too). The bot used to
+pass whenever KataGo saw none of the opponent's stones as dead - even right after the
+opponent played a stone. On 2026-10-11 an opponent (HoreaUrsu, H6, ranked) disputed a
+close game (Black +3.7 by KataGo), kept playing, and NeuralZ02 passed 34 times in a row
+while Black captured 50 White stones: B+231.5 (checked, `NeuralZ02.log`; all 8 bots run
+`--cleanup`, only NeuralZ02 was hit, 43 such passes in 10-08 to 10-12). Now cleanup never
+passes after an opponent's stone (KataGo's move, `must_move`), and passes after an
+opponent's pass only with the same checks as a normal pass back.
 
 ## Inference speed
 

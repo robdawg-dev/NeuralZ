@@ -66,8 +66,11 @@ is not, and the opponent's marking stands: in early October 2026, five free game
 was winning on the board were scored as losses this way.
 
 Optional: `start_client.sh --cleanup` also supports `kgs-genmove_cleanup`. When an
-opponent disputes the dead stones in a non-Japanese-rules game, KGS then lets play resume
-and the bot captures the stones KataGo judges dead before passing. Off by default.
+opponent disputes the dead stones in a non-Japanese-rules game (ranked games too), KGS then
+lets play resume and the bot captures the stones KataGo judges dead before passing. It
+passes only after the opponent passes, with the same checks as a normal pass back; after
+an opponent's stone it always answers with KataGo's move - otherwise an opponent can
+dispute, then keep playing for free while the bot passes. Off by default.
 
 ### Client options
 
