@@ -32,9 +32,10 @@ KGS ranks are closer, since a policy-only bot's limits (reading, life and death,
 endgame) matter there as much as a few points of accuracy.
 [SAMPLE_RUN.md](SAMPLE_RUN.md) reproduces the b15c192 run from scratch.
 
-**History.** In 2016, RocAlphaGo's 12-layer, 96-filter CNN trained on GoGoD games reached
-about 2 kyu on KGS. In 2017, the same network trained on KGS games, close to the original
-AlphaGo policy network, reached about 2 dan; that run took two months on a GTX 1060.
+**History.** In 2016, a 12-layer, 96-filter CNN trained on GoGoD games reached
+about 2 kyu on KGS. In 2017, a wider version - 12 layers, 192 filters, matching the original
+AlphaGo policy network - trained on KGS games reached about 2 dan; that run took two months
+on a GTX 1060.
 NeuralZ began in 2026: it moved the project to uv, Docker and current TensorFlow/Keras,
 then added residual networks and KataGo self-play data.
 

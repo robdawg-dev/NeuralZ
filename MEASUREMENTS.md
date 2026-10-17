@@ -142,7 +142,10 @@ close game (Black +3.7 by KataGo), kept playing, and NeuralZ02 passed 34 times i
 while Black captured 50 White stones: B+231.5 (checked, `NeuralZ02.log`; all 8 bots run
 `--cleanup`, only NeuralZ02 was hit, 43 such passes in 10-08 to 10-12). Now cleanup never
 passes after an opponent's stone (KataGo's move, `must_move`), and passes after an
-opponent's pass only with the same checks as a normal pass back.
+opponent's pass only with the same checks as a normal pass back. Deployed 2026-10-12
+22:42 UTC. On KGS to 10-16 (checked, the 8 bots' GTP logs and 1,383 game records): 9
+disputes, 230 cleanup requests, 176 of them right after an opponent's stone - none
+answered with a pass.
 
 ## Inference speed
 
