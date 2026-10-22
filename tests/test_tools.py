@@ -305,6 +305,21 @@ def test_models_package_and_fetch_round_trip(tmp_path):
         fetch_model.fetch("2017net", release.resolve().as_uri(), str(tmp_path / "other"))
 
 
+def test_release_notes_report_the_shipped_checkpoint_not_the_best(tmp_path):
+    import package_models
+    folder = tmp_path / "m"
+    folder.mkdir()
+    weights = folder / "weights.00002.weights.h5"  # epoch 2 of 3 is the one shipped
+    weights.write_bytes(b"\0")
+    meta = folder / "metadata.json"
+    meta.write_text(json.dumps({"epochs": [
+        {"val_accuracy": 0.50, "val_top5_accuracy": 0.80},
+        {"val_accuracy": 0.55, "val_top5_accuracy": 0.85},
+        {"val_accuracy": 0.60, "val_top5_accuracy": 0.90}]}))
+    notes = package_models.notes_for("m", [str(weights), str(meta)])
+    assert "epoch 2 of 3; held-out top-1 55.0% / top-5 85.0%" in notes
+
+
 def test_a_katago_that_dies_is_reported_with_its_output(tmp_path):
     crash = tmp_path / "crash.py"
     crash.write_text("import sys\nsys.stderr.write('no CUDA device found\n')\nsys.exit(2)\n")

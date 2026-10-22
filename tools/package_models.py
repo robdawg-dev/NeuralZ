@@ -15,12 +15,13 @@ import glob
 import hashlib
 import json
 import os
+import re
 import sys
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-DEFAULT_MODELS = ["b20c256", "b15c192", "b10c128", "2017net"]
+DEFAULT_MODELS = ["b20c256", "b15c192", "b10c128"]  # the published ones
 
 
 def model_specs():
@@ -61,12 +62,16 @@ def notes_for(name, files):
     if meta:
         with open(meta[0]) as f:
             epochs = json.load(f).get("epochs", [])
-        if epochs:
-            best = max(epochs, key=lambda e: e.get("val_accuracy", 0))
-            text += "; {} epochs; held-out top-1 {:.1%}".format(
-                len(epochs), best.get("val_accuracy", 0))
-            if "val_top5_accuracy" in best:
-                text += " / top-5 {:.1%}".format(best["val_top5_accuracy"])
+        # the shipped checkpoint's epoch, from its weights file name (weights.00094... is
+        # epoch 94, 1-based); without one, the run's last epoch
+        shipped = [re.search(r"weights\.(\d+)\.", os.path.basename(f)) for f in files]
+        n = next((int(m.group(1)) for m in shipped if m), len(epochs))
+        if 1 <= n <= len(epochs):
+            e = epochs[n - 1]
+            text += "; epoch {} of {}; held-out top-1 {:.1%}".format(
+                n, len(epochs), e.get("val_accuracy", 0))
+            if "val_top5_accuracy" in e:
+                text += " / top-5 {:.1%}".format(e["val_top5_accuracy"])
     return text
 
 
