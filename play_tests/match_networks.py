@@ -16,7 +16,7 @@ against KataGo's own scoring of the same SGFs) is written alongside them, all
 under a new directory per run in play_tests/sgf/.
 
 Run natively (no Docker/GPU needed) via uv, e.g.:
-    uv run python play_tests/match_networks.py simplecnn resnet --num-games 10
+    uv run python play_tests/match_networks.py b20c256 b15c192 --num-games 10
 """
 import os
 # Must be decided before any keras/tensorflow import (transitively pulled in

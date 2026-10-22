@@ -6,7 +6,7 @@ and a red square on the last move.
     uv run python tools/plot_heatmaps.py game.sgf out_dir
     # chosen positions (before moves 37 and 78), another network, every point labeled
     uv run python tools/plot_heatmaps.py game.sgf out_dir --moves 37 78 \\
-        --model b15c192latest --all-points --cmap plasma
+        --model b15c192 --all-points --cmap plasma
     # a model by files rather than by name
     uv run python tools/plot_heatmaps.py game.sgf out_dir --json model.json --weights w.h5
 

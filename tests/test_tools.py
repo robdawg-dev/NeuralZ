@@ -291,18 +291,18 @@ def test_tactics_scoring_counts_accepted_moves():
 def test_models_package_and_fetch_round_trip(tmp_path):
     import fetch_model
     import package_models
-    models = tmp_path / "models" / "2016net"
+    models = tmp_path / "models" / "2017net"
     models.mkdir(parents=True)
     (models / "model.json").write_text("{}")
     (models / "model.weights.h5").write_bytes(b"\0" * 1000)
     release = tmp_path / "release"
-    package_models.package(["2016net"], str(release), models_dir=str(tmp_path / "models"))
+    package_models.package(["2017net"], str(release), models_dir=str(tmp_path / "models"))
     root = tmp_path / "checkout"
-    folder = fetch_model.fetch("2016net", release.resolve().as_uri(), str(root))
+    folder = fetch_model.fetch("2017net", release.resolve().as_uri(), str(root))
     assert sorted(os.listdir(folder)) == ["model.json", "model.weights.h5"]
-    (release / "2016net.zip").write_bytes(b"tampered")
+    (release / "2017net.zip").write_bytes(b"tampered")
     with pytest.raises(SystemExit, match="checksum mismatch"):
-        fetch_model.fetch("2016net", release.resolve().as_uri(), str(tmp_path / "other"))
+        fetch_model.fetch("2017net", release.resolve().as_uri(), str(tmp_path / "other"))
 
 
 def test_a_katago_that_dies_is_reported_with_its_output(tmp_path):

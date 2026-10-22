@@ -3,7 +3,7 @@ holding exactly the files play_tests/policy_loading.py loads (model JSON, weight
 metadata*.json), under play_tests/models/<name>/ - so unzipping at the repo root puts the
 model in place - plus SHA256SUMS and a NOTES.md draft for the release text.
 
-    uv run python tools/package_models.py [b20c256 b15c192latest ...] [--out dist/release]
+    uv run python tools/package_models.py [b20c256 b15c192 ...] [--out dist/release]
 
 Then create the release by hand or with gh, e.g.
     gh release create models-2026-10 dist/release/*.zip dist/release/SHA256SUMS \\
@@ -20,7 +20,7 @@ import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-DEFAULT_MODELS = ["b20c256", "b15c192latest", "b10c128mb1024", "2016net"]
+DEFAULT_MODELS = ["b20c256", "b15c192", "b10c128", "2017net"]
 
 
 def model_specs():

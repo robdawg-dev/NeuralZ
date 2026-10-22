@@ -3,7 +3,7 @@ played, over a folder of real game records - a quick, cheap comparison of networ
 a strength measure: a network can match human moves well and still lose games (reading,
 life and death), and only play against people gives a rank.
 
-    uv run python tools/pro_agreement.py [folder] [--models b20c256 b15c192latest ...] \\
+    uv run python tools/pro_agreement.py [folder] [--models b20c256 b15c192 ...] \\
         [--by-game]
 
 Default folder: workspace/famous/real (professional games, untracked - point it at any
@@ -18,7 +18,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-DEFAULT_MODELS = ["b20c256", "b15c192latest", "b10c128mb1024", "2016net"]
+DEFAULT_MODELS = ["b20c256", "b15c192", "b10c128", "2017net"]
 
 
 def agreement(policy, sgf_text):

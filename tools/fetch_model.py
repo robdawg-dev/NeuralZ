@@ -3,7 +3,7 @@ release's SHA256SUMS, and unpack it into play_tests/models/<name>/ - where every
 here looks for models. Standard library only: works before uv sync.
 
     python tools/fetch_model.py                  # b20c256, the deployed network
-    python tools/fetch_model.py b15c192latest --tag models-2026-10
+    python tools/fetch_model.py b15c192 --tag models-2026-10
 
 The release files are <name>.zip and SHA256SUMS (made by tools/package_models.py).
 --base-url fetches from somewhere else (any URL urllib can open, file:// included).

@@ -3,7 +3,7 @@
 is a crosstable plus Elo from a Bradley-Terry fit over all games.
 
     # play: every pair of these models (names from play_tests/policy_loading.py)
-    uv run python tools/playoff.py run b20c256 b15c192latest b10c128mb1024 --games 30 \\
+    uv run python tools/playoff.py run b20c256 b15c192 b10c128 --games 30 \\
         [--gpu] [--docker] [--out workspace/playoff]
 
     # the table again, from matches already played and judged

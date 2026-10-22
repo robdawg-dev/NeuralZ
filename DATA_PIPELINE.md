@@ -242,7 +242,7 @@ their SGFs re-convert to identical tensors, each ~99.5k-position shard draws fro
 different games, and handicap sits at 4.8–5.0% in every shard.
 
 First run on it (`_restower_b15c192_v4shuf40m_mb1024_lr1p6_seed90001`, LR 1.6, batch 1024;
-released as b15c192latest, metadata in `play_tests/models/b15c192latest/`): 95 epochs,
+released as b15c192, metadata in `play_tests/models/b15c192/`): 95 epochs,
 best **val_loss 1.4836**, val_accuracy 0.5558. The earlier run on the old pipeline reached
 1.5608 at epoch 74. **The two are not directly comparable**:
 the training and validation sets differ, and removing blunders and noisy game types lowers

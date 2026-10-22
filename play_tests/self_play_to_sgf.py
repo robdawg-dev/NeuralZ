@@ -8,7 +8,7 @@ positions a model's own self-play produces (e.g. checking whether a run with a
 lot of slow get_move() calls corresponds to a messy, ladder-heavy game).
 
 Run natively (no Docker/GPU needed) via uv, e.g.:
-    uv run python play_tests/self_play_to_sgf.py 2016net
+    uv run python play_tests/self_play_to_sgf.py 2017net
 """
 import os
 # Must be set before any keras/tensorflow import (transitively pulled in by

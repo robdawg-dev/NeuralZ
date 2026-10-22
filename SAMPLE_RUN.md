@@ -431,7 +431,7 @@ Elo (it needs KataGo: `KATAGO_EXE`, `KATAGO_MODEL`, `KATAGO_CONFIG`; see
 where the deployed bot went badly wrong:
 
 ```bash
-uv run python tools/playoff.py run <your model> b15c192latest --games 30 --docker --gpu
+uv run python tools/playoff.py run <your model> b15c192 --games 30 --docker --gpu
 uv run python tools/tactics_bench.py run --model <your model>
 ```
 

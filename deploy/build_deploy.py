@@ -3,7 +3,7 @@ go_server.py (holds the network) + go_client.py (the GTP engine kgsGtp starts), 
 only the code, model and locked dependencies they need.
 
     python deploy/build_deploy.py                    # b20c256 -> dist/neuralz-bot/
-    python deploy/build_deploy.py --model b15c192latest --out dist/bot-b15
+    python deploy/build_deploy.py --model b15c192 --out dist/bot-b15
 
 Runs with any Python 3 (standard library only) plus `uv` on PATH, which writes the
 folder's uv.lock. Copy the result to the server and run its install.sh - see the

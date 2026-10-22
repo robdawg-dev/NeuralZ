@@ -77,7 +77,7 @@ captured, not that capturing them would cost the opponent more. Open; see
 
 ### Move limit (`--max-moves 800`)
 
-With a 300-move cap, 0 of 50 games between b10c128 and the 2016 network reached a natural
+With a 300-move cap, 0 of 50 games between b10c128 and the 2017 network reached a natural
 two-pass end, leaving dead groups that skew the built-in count; with 800, 100 of 100 did
 (2026-09-12; not re-checked, as the match directories are no longer on disk). Consistent
 with that, every one of the 1,000 games in the sampling study above, all at an 800-move
@@ -231,14 +231,14 @@ Every pair of four policies played 30 games (colors alternating, komi 7.5, `go_c
 sampling defaults, ladder guard on, no search); KataGo decided the winners. Row's wins
 against the column:
 
-| | b20c256 | b15c192latest | b10c128mb1024 | 2016net | Elo |
+| | b20c256 | b15c192 | b10c128 | 2017net | Elo |
 |---|---|---|---|---|---|
 | **b20c256** | - | 25-5 | 22-8 | 26-4 | +482 |
-| **b15c192latest** | 5-25 | - | 23-7 | 30-0 | +369 |
-| **b10c128mb1024** | 8-22 | 7-23 | - | 24-6 | +235 |
-| **2016net** | 4-26 | 0-30 | 6-24 | - | 0 |
+| **b15c192** | 5-25 | - | 23-7 | 30-0 | +369 |
+| **b10c128** | 8-22 | 7-23 | - | 24-6 | +235 |
+| **2017net** | 4-26 | 0-30 | 6-24 | - | 0 |
 
-Elo is a Bradley-Terry fit over all 180 games (2016net = 0), each gap ±60-80. No two games
+Elo is a Bradley-Terry fit over all 180 games (2017net = 0), each gap ±60-80. No two games
 of a pair shared even their first 40 moves. Source: `workspace/playoff/` (`run.sh`,
 `table.py`; match directories in `matches.txt`).
 
@@ -249,13 +249,13 @@ strength:
 
 - **Agreement with professional moves** (`tools/pro_agreement.py`, 11 professional games
   from `workspace/famous/real/`, 2,605 moves): top-1 / top-5 - b20c256 51.3% / 82.9%,
-  b15c192latest 50.6% / 82.6%, b10c128mb1024 49.1% / 81.2%, **2016net 50.0% / 82.6%**.
-  The 2016 network, trained on human games, matches professionals as often as b20c256,
+  b15c192 50.6% / 82.6%, b10c128 49.1% / 81.2%, **2017net 50.0% / 82.6%**.
+  The 2017 network, trained on KGS games, matches professionals as often as b20c256,
   which beats it 26-4: networks trained on KataGo self-play imitate KataGo, not humans.
 - **Tactics benchmark** (`tools/tactics_bench.py`, `tools/data/tactics.json`: 57 positions
   from the bot's 197 post-deploy losses where its move lost 20+ points - 45 blunders, 12
-  ignored fights): right move found - b20c256 0 (these are its own mistakes), b15c192latest
-  6, b10c128mb1024 7, 2016net 10; ignored fights 0-1 of 12 for every network. With the
+  ignored fights): right move found - b20c256 0 (these are its own mistakes), b15c192
+  6, b10c128 7, 2017net 10; ignored fights 0-1 of 12 for every network. With the
   ladder guard off, b20c256 gets 1 (the false positive above).
 
 ### Model results
@@ -265,8 +265,8 @@ Checked against each run's `metadata.json`:
 | Run | Epochs | Wall time | val loss | Top-1 / top-5 |
 |---|---|---|---|---|
 | `workspace/runs/newres_b20c256` (epoch 67) | 67 × 2.56M positions | 42.9 h | 1.391 | 57.3% / 89.2% |
-| `play_tests/models/b15c192latest` (epoch 94; run `_restower_b15c192_v4shuf40m_mb1024_lr1p6_seed90001`) | 95 | 38.6 h | 1.484 | 55.6% / 87.4% |
-| `play_tests/models/b10c128mb1024` (epoch 125) | 125 | 23.3 h | 1.669 | 51.8% / 84.2% |
+| `play_tests/models/b15c192` (epoch 94; run `_restower_b15c192_v4shuf40m_mb1024_lr1p6_seed90001`) | 95 | 38.6 h | 1.484 | 55.6% / 87.4% |
+| `play_tests/models/b10c128` (epoch 125) | 125 | 23.3 h | 1.669 | 51.8% / 84.2% |
 
 ### Trainer settings
 
