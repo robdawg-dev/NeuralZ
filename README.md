@@ -64,6 +64,20 @@ uv run pytest tests -q -m "not slow"
 The board engine and feature planes are Cython extensions; rebuild them after changing a
 `.pyx` or `.pxd` file.
 
+## Get the models
+
+The trained networks are in the
+[models-2026-10 release](https://github.com/robdawg-dev/NeuralZ/releases/tag/models-2026-10):
+b20c256 (259 MB), b15c192 (112 MB) and b10c128 (34 MB). From the repository root:
+
+```bash
+python tools/fetch_model.py b20c256     # or b15c192, b10c128
+```
+
+It downloads the model, checks it against the release's `SHA256SUMS`, and unpacks it into
+`play_tests/models/b20c256/`. It uses only Python's standard library, so it works before
+anything else is installed.
+
 ## Playing
 
 Start the server with a model, then point any GTP controller at the client:
@@ -71,6 +85,12 @@ Start the server with a model, then point any GTP controller at the client:
 ```bash
 python go_server.py <model.json> <weights.h5>   # loads the network; serves on 127.0.0.1:5005
 python go_client.py                             # the GTP engine: stdin/stdout
+```
+
+With the downloaded b20c256:
+
+```bash
+python go_server.py play_tests/models/b20c256/b20c256_model.json play_tests/models/b20c256/weights.00067.weights.h5
 ```
 
 - `--symmetries 4` or `8` on the server averages the network over board rotations and
@@ -82,8 +102,8 @@ python go_client.py                             # the GTP engine: stdin/stdout
 
 For KGS, [deploy/build_deploy.py](deploy/build_deploy.py) assembles a self-contained folder
 for a CPU-only Ubuntu server: the server, the client, KataGo, a locked environment and
-install scripts. Its [README](deploy/templates/README.md) covers installing it and the
-kgsGtp setup.
+install scripts. It takes the model from `play_tests/models/`, so fetch it first. Its
+[README](deploy/templates/README.md) covers installing it and the kgsGtp setup.
 
 ## Training
 
