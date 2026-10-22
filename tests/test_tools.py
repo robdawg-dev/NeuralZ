@@ -297,6 +297,7 @@ def test_models_package_and_fetch_round_trip(tmp_path):
     (models / "model.weights.h5").write_bytes(b"\0" * 1000)
     release = tmp_path / "release"
     package_models.package(["2017net"], str(release), models_dir=str(tmp_path / "models"))
+    assert b"\r" not in (release / "SHA256SUMS").read_bytes()  # checkable with sha256sum -c
     root = tmp_path / "checkout"
     folder = fetch_model.fetch("2017net", release.resolve().as_uri(), str(root))
     assert sorted(os.listdir(folder)) == ["model.json", "model.weights.h5"]

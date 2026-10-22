@@ -91,7 +91,8 @@ def package(names, out, models_dir=None):
         sums.append("{}  {}".format(sha256(zpath), os.path.basename(zpath)))
         notes.append(notes_for(name, files))
         print("{}: {} files, {:.0f} MB".format(zpath, len(files), os.path.getsize(zpath) / 1e6))
-    with open(os.path.join(out, "SHA256SUMS"), "w") as f:
+    # LF endings whatever the platform, so `sha256sum -c SHA256SUMS` works on Linux/macOS
+    with open(os.path.join(out, "SHA256SUMS"), "w", newline="\n") as f:
         f.write("\n".join(sums) + "\n")
     with open(os.path.join(out, "NOTES.md"), "w") as f:
         f.write("\n".join(notes) + "\n")
